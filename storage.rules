@@ -1,0 +1,177 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function currentUserEmail() {
+      return isSignedIn() && request.auth.token.email is string
+             ? request.auth.token.email
+             : '';
+    }
+
+    function currentUserUidDocExists() {
+      return isSignedIn() &&
+             firestore.exists(/databases/(default)/documents/users/$(request.auth.uid));
+    }
+
+    function currentUserEmailDocExists() {
+      return currentUserEmail() != '' &&
+             firestore.exists(/databases/(default)/documents/users/$(currentUserEmail()));
+    }
+
+    function currentUserDocExists() {
+      return currentUserUidDocExists() || currentUserEmailDocExists();
+    }
+
+    function currentUserData() {
+      return currentUserUidDocExists()
+             ? firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data
+             : firestore.get(/databases/(default)/documents/users/$(currentUserEmail())).data;
+    }
+
+    function currentUserOutletId() {
+      return currentUserDocExists() && currentUserData().outlet_id is string
+             ? currentUserData().outlet_id
+             : '';
+    }
+
+    function hasRole(roleName) {
+      return currentUserDocExists() &&
+             currentUserData().role == roleName;
+    }
+
+    function isAdmin() {
+      return hasRole('admin');
+    }
+
+    function isSupervisor() {
+      return hasRole('supervisor');
+    }
+
+    function isFinance() {
+      return hasRole('finance');
+    }
+
+    function isElevated() {
+      return isAdmin() || isSupervisor();
+    }
+
+    function isSafeImage() {
+      return request.resource.contentType.matches('image/.*') &&
+             request.resource.size < 5 * 1024 * 1024;
+    }
+
+    function isNewFile() {
+      return resource == null;
+    }
+
+    function documentOutletId(data) {
+      return data.outlet_id is string
+             ? data.outlet_id
+             : (data.outlet is string ? data.outlet : '');
+    }
+
+    function mallDisplayDocExists(displayId) {
+      return firestore.exists(/databases/(default)/documents/mall_displays/$(displayId));
+    }
+
+    function mallDisplayData(displayId) {
+      return firestore.get(/databases/(default)/documents/mall_displays/$(displayId)).data;
+    }
+
+    function canReadMallDisplayProof(displayId) {
+      return mallDisplayDocExists(displayId) &&
+             (
+               isAdmin() ||
+               isFinance() ||
+               (isSupervisor() && documentOutletId(mallDisplayData(displayId)) == currentUserOutletId())
+             );
+    }
+
+    function canWriteMallDisplayProof(displayId) {
+      return mallDisplayDocExists(displayId) &&
+             (
+               isAdmin() ||
+               (isSupervisor() && documentOutletId(mallDisplayData(displayId)) == currentUserOutletId())
+             );
+    }
+
+    function taskDocExists(taskId) {
+      return firestore.exists(/databases/(default)/documents/tasks/$(taskId));
+    }
+
+    function taskData(taskId) {
+      return firestore.get(/databases/(default)/documents/tasks/$(taskId)).data;
+    }
+
+    function canReadTaskProof(taskId) {
+      return taskDocExists(taskId) &&
+             (
+               isAdmin() ||
+               (isSupervisor() && documentOutletId(taskData(taskId)) == currentUserOutletId())
+             );
+    }
+
+    function canWriteTaskProof(taskId) {
+      return taskDocExists(taskId) &&
+             (
+               isAdmin() ||
+               (
+                 isSupervisor() &&
+                 documentOutletId(taskData(taskId)) == currentUserOutletId() &&
+                 taskData(taskId).assignedToUid is string &&
+                 taskData(taskId).assignedToUid == request.auth.uid
+               )
+             );
+    }
+
+    // Task proof uploads
+    match /tasks/{taskId}/{fileName} {
+      allow read: if canReadTaskProof(taskId);
+      allow create: if canWriteTaskProof(taskId) && isSafeImage() && isNewFile();
+      allow delete: if isAdmin();
+    }
+
+    // Mall display proof uploads
+    match /mall_displays/{displayId}/{fileName} {
+      allow read: if canReadMallDisplayProof(displayId);
+      allow create: if canWriteMallDisplayProof(displayId) && isSafeImage() && isNewFile();
+      allow delete: if isAdmin();
+    }
+
+    // Legacy display proof path compatibility
+    match /displays/{displayId}/proofs/{imageId} {
+      allow read: if canReadMallDisplayProof(displayId);
+      allow create: if canWriteMallDisplayProof(displayId) && isSafeImage() && isNewFile();
+      allow delete: if isAdmin();
+    }
+
+    // Existing event proof uploads
+    match /events/{eventId}/proofs/{imageId} {
+      allow read: if isSignedIn();
+      allow create: if isElevated() && isSafeImage() && isNewFile();
+      allow delete: if isAdmin();
+    }
+
+    // Existing campaign asset uploads
+    match /campaigns/{campaignId}/assets/{assetId} {
+      allow read: if isSignedIn();
+      allow create: if isAdmin() && isSafeImage() && isNewFile();
+      allow delete: if isAdmin();
+    }
+
+    // Existing mascot condition uploads
+    match /mascots/{logId}/condition/{imageId} {
+      allow read: if isSignedIn();
+      allow create: if isElevated() && isSafeImage() && isNewFile();
+      allow delete: if isAdmin();
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

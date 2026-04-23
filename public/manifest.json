@@ -1,0 +1,21 @@
+{
+  "short_name": "MktgOps",
+  "name": "Marketing Operations Control Center",
+  "description": "Enterprise Marketing Operations and Outlet Management Center",
+  "icons": [
+    {
+      "src": "https://picsum.photos/seed/mktg/192/192",
+      "type": "image/png",
+      "sizes": "192x192"
+    },
+    {
+      "src": "https://picsum.photos/seed/mktg/512/512",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ],
+  "start_url": "/",
+  "display": "standalone",
+  "theme_color": "#f43f5e",
+  "background_color": "#ffffff"
+}

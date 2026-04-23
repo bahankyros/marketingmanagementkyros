@@ -1,0 +1,258 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "System roles mapping to Google Authentication",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "supervisor", "finance"] },
+        "outlet": { "type": "string" },
+        "createdAt": { "type": "timestamp" },
+        "updatedAt": { "type": "timestamp" }
+      },
+      "required": ["email", "role"]
+    },
+    "Campaign": {
+      "title": "Campaign",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "objective": { "type": "string" },
+        "type": { "type": "string", "enum": ["Brand", "Promo", "Opening", "Seasonal", "Sampling", "Partnership", "Digital", "Event"] },
+        "status": { "type": "string", "enum": ["Planning", "Active", "Completed", "Cancelled"] },
+        "budget": { "type": "number" },
+        "ownerId": { "type": "string" },
+        "targetAudience": { "type": "string" },
+        "mainOffer": { "type": "string" },
+        "startDate": { "type": "string" },
+        "endDate": { "type": "string" },
+        "relatedOutlets": { "type": "array" },
+        "promoMechanics": { "type": "string" },
+        "voucherCode": { "type": "string" },
+        "landingPage": { "type": "string" },
+        "createdAt": { "type": "timestamp" },
+        "updatedAt": { "type": "timestamp" },
+        "creatorId": { "type": "string" }
+      }
+    },
+    "Event": {
+      "title": "Event",
+      "type": "object",
+      "properties": {
+        "eventName": { "type": "string" },
+        "organizer": { "type": "string" },
+        "outlet": { "type": "string" },
+        "proposedDate": { "type": "string" },
+        "type": { "type": "string" },
+        "decisionStatus": { "type": "string" },
+        "campaignId": { "type": "string" },
+        "priority": { "type": "string" },
+        "submitterId": { "type": "string" },
+        "creatorId": { "type": "string" },
+        "actualAttendance": { "type": "number" },
+        "vouchersDistributed": { "type": "number" },
+        "vouchersRedeemed": { "type": "number" },
+        "salesGenerated": { "type": "number" },
+        "photos": { "type": "array" },
+        "createdAt": { "type": "timestamp" },
+        "updatedAt": { "type": "timestamp" }
+      }
+    },
+    "MallDisplay": {
+      "title": "Mall Display",
+      "type": "object",
+      "properties": {
+        "outlet": { "type": "string" },
+        "slotCode": { "type": "string" },
+        "campaignId": { "type": "string" },
+        "designStatus": { "type": "string" },
+        "approvalStatus": { "type": "string" },
+        "currentStatus": { "type": "string" },
+        "photoProof": { "type": "string" },
+        "createdAt": { "type": "timestamp" },
+        "updatedAt": { "type": "timestamp" }
+      }
+    },
+    "MascotLog": {
+      "title": "Mascot Management",
+      "type": "object",
+      "properties": {
+        "date": { "type": "string" },
+        "outletEvent": { "type": "string" },
+        "campaignId": { "type": "string" },
+        "status": { "type": "string" },
+        "condition": { "type": "string" },
+        "assignedPicId": { "type": "string" },
+        "actualUsageNotes": { "type": "string" },
+        "photoProof": { "type": "string" },
+        "createdAt": { "type": "timestamp" },
+        "updatedAt": { "type": "timestamp" }
+      }
+    },
+    "Partnership": {
+      "title": "Partnership",
+      "type": "object",
+      "properties": {
+        "companyName": { "type": "string" },
+        "industry": { "type": "string" },
+        "stage": { "type": "string" },
+        "vouchersAllocated": { "type": "number" },
+        "vouchersRedeemed": { "type": "number" },
+        "createdAt": { "type": "timestamp" },
+        "updatedAt": { "type": "timestamp" }
+      }
+    },
+    "PaidAd": {
+      "title": "Paid Ad",
+      "type": "object",
+      "properties": {
+        "platform": { "type": "string" },
+        "objective": { "type": "string" },
+        "spend": { "type": "number" },
+        "reach": { "type": "number" },
+        "result": { "type": "number" },
+        "engagement": { "type": "number" },
+        "createdAt": { "type": "timestamp" },
+        "updatedAt": { "type": "timestamp" }
+      }
+    },
+    "AdHocTask": {
+      "title": "Ad Hoc Task",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "category": { "type": "string" },
+        "status": { "type": "string" },
+        "priority": { "type": "string" },
+        "dueDate": { "type": "string" },
+        "notes": { "type": "string" },
+        "createdAt": { "type": "timestamp" },
+        "updatedAt": { "type": "timestamp" },
+        "creatorId": { "type": "string" }
+      }
+    },
+    "GlobalSettings": {
+      "title": "Global KPI Settings",
+      "type": "object",
+      "properties": {
+        "partnershipTarget": { "type": "number" },
+        "displaySlotsTarget": { "type": "number" },
+        "eventsTarget": { "type": "number" },
+        "kebabTarget": { "type": "number" },
+        "mascotTarget": { "type": "number" },
+        "blogTarget": { "type": "number" },
+        "socialTarget": { "type": "number" },
+        "adBudget": { "type": "number" },
+        "totalMarketingBudget": { "type": "number" },
+        "updatedAt": { "type": "timestamp" }
+      }
+    },
+    "Outlet": {
+      "title": "Outlet Master Data",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "baseSales": { "type": "number" },
+        "order": { "type": "number" },
+        "isActive": { "type": "boolean" }
+      }
+    },
+    "SocialPost": {
+      "title": "Social Post",
+      "type": "object",
+      "properties": {
+        "platform": { "type": "string" },
+        "status": { "type": "string" },
+        "createdAt": { "type": "timestamp" },
+        "updatedAt": { "type": "timestamp" }
+      }
+    },
+    "BlogOutreach": {
+      "title": "Blog Outreach",
+      "type": "object",
+      "properties": {
+        "outreachStatus": { "type": "string" },
+        "link": { "type": "string" },
+        "keywords": { "type": "string" },
+        "domain": { "type": "string" },
+        "createdAt": { "type": "timestamp" },
+        "updatedAt": { "type": "timestamp" }
+      }
+    },
+    "DeliveryPromo": {
+      "title": "Delivery Promo",
+      "type": "object",
+      "properties": {
+        "platform": { "type": "string" },
+        "promoType": { "type": "string" },
+        "status": { "type": "string" },
+        "spend": { "type": "number" },
+        "salesGenerated": { "type": "number" },
+        "createdAt": { "type": "timestamp" },
+        "updatedAt": { "type": "timestamp" }
+      }
+    },
+    "MascotSchedule": {
+      "title": "Mascot Schedule",
+      "type": "object",
+      "properties": {
+        "date": { "type": "string" },
+        "status": { "type": "string" },
+        "createdAt": { "type": "timestamp" },
+        "updatedAt": { "type": "timestamp" }
+      }
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "RBAC and Identity Store"
+    },
+    "campaigns/{campaignId}": {
+      "schema": { "$ref": "#/entities/Campaign" },
+      "description": "Master relational entity"
+    },
+    "events/{eventId}": {
+      "schema": { "$ref": "#/entities/Event" },
+      "description": "Supervisors propose & execute; Admins approve."
+    },
+    "mall_displays/{displayId}": {
+      "schema": { "$ref": "#/entities/MallDisplay" },
+      "description": "Execution status of the 18 active display slots."
+    },
+    "mascot_logs/{logId}": {
+      "schema": { "$ref": "#/entities/MascotLog" },
+      "description": "Mascot tracking and condition reports."
+    },
+    "partnerships/{partnershipId}": {
+      "schema": { "$ref": "#/entities/Partnership" }
+    },
+    "paid_ads/{adId}": {
+      "schema": { "$ref": "#/entities/PaidAd" }
+    },
+    "ad_hoc_tasks/{taskId}": {
+      "schema": { "$ref": "#/entities/AdHocTask" }
+    },
+    "social_posts/{postId}": {
+      "schema": { "$ref": "#/entities/SocialPost" }
+    },
+    "blog_outreach/{blogId}": {
+      "schema": { "$ref": "#/entities/BlogOutreach" }
+    },
+    "delivery_promos/{promoId}": {
+      "schema": { "$ref": "#/entities/DeliveryPromo" }
+    },
+    "settings/{settingId}": {
+      "schema": { "$ref": "#/entities/GlobalSettings" },
+      "description": "Singleton KPI targets (e.g., globals)"
+    },
+    "outlets/{outletId}": {
+      "schema": { "$ref": "#/entities/Outlet" },
+      "description": "Master list of outlets and projections"
+    },
+    "mascot_schedule/{scheduleId}": {
+      "schema": { "$ref": "#/entities/MascotSchedule" }
+    }
+  }
+}

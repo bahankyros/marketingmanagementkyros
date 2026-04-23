@@ -1,0 +1,481 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function currentUserEmail() {
+      return isAuthenticated() && request.auth.token.email is string
+             ? request.auth.token.email
+             : '';
+    }
+
+    function currentUserUidDocExists() {
+      return isAuthenticated() &&
+             exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function currentUserEmailDocExists() {
+      return currentUserEmail() != '' &&
+             exists(/databases/$(database)/documents/users/$(currentUserEmail()));
+    }
+
+    function currentUserDocExists() {
+      return currentUserUidDocExists() || currentUserEmailDocExists();
+    }
+
+    function currentUserData() {
+      return currentUserUidDocExists()
+             ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data
+             : get(/databases/$(database)/documents/users/$(currentUserEmail())).data;
+    }
+
+    function currentUserOutletId() {
+      return currentUserDocExists() && currentUserData().outlet_id is string
+             ? currentUserData().outlet_id
+             : '';
+    }
+
+    function hasRole(roleName) {
+      return currentUserDocExists() &&
+             currentUserData().role == roleName;
+    }
+
+    function isAdmin() {
+      return hasRole('admin');
+    }
+
+    function isSupervisor() {
+      return hasRole('supervisor');
+    }
+
+    function isFinance() {
+      return hasRole('finance');
+    }
+
+    function isOperationalReader() {
+      return isAdmin() || isSupervisor() || isFinance();
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isNumber(value) {
+      return value is int || value is float;
+    }
+
+    function isNonEmptyString(value) {
+      return value is string && value.size() > 0;
+    }
+
+    function isMonthKey(value) {
+      return value is string && value.matches('^\\d{4}-\\d{2}$');
+    }
+
+    function documentOutletId(data) {
+      return data.outlet_id is string
+             ? data.outlet_id
+             : (data.outlet is string ? data.outlet : '');
+    }
+
+    function isSupervisorForOutletId(outletId) {
+      return isSupervisor() &&
+             currentUserOutletId() != '' &&
+             outletId is string &&
+             outletId == currentUserOutletId();
+    }
+
+    function isSupervisorForDocument(data) {
+      return isSupervisorForOutletId(documentOutletId(data));
+    }
+
+    function isOwnUserProfile(userId) {
+      return isAuthenticated() &&
+             (
+               request.auth.uid == userId ||
+               (currentUserEmail() != '' && currentUserEmail() == userId) ||
+               (resource.data.auth_uid is string && resource.data.auth_uid == request.auth.uid) ||
+               (currentUserEmail() != '' &&
+                resource.data.email is string &&
+                resource.data.email == currentUserEmail())
+             );
+    }
+
+    function isSelfNameUpdate(userId) {
+      return isAuthenticated() &&
+             isOwnUserProfile(userId) &&
+             (
+               (incoming().diff(existing()).affectedKeys().hasOnly(['name']) &&
+                incoming().name is string) ||
+               (incoming().diff(existing()).affectedKeys().hasOnly(['display_name']) &&
+                incoming().display_name is string)
+             );
+    }
+
+    function isSelfProvisionedClaimCreate(userId) {
+      return isAuthenticated() &&
+             userId == request.auth.uid &&
+             !currentUserUidDocExists() &&
+             currentUserEmailDocExists() &&
+             currentUserData().auth_uid is string &&
+             currentUserData().auth_uid == '' &&
+             incoming().diff(currentUserData()).affectedKeys().hasOnly(['auth_uid']) &&
+             incoming().auth_uid == request.auth.uid &&
+             incoming().email is string &&
+             incoming().email == currentUserEmail();
+    }
+
+    function isSelfProvisionedClaimDelete(userId) {
+      return isAuthenticated() &&
+             userId == currentUserEmail() &&
+             currentUserUidDocExists() &&
+             existing().auth_uid is string &&
+             existing().auth_uid == '' &&
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.diff(existing()).affectedKeys().hasOnly(['auth_uid']) &&
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.auth_uid == request.auth.uid &&
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.email is string &&
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.email == currentUserEmail();
+    }
+
+    function isValidTaskDoc(data) {
+      return data.keys().hasAll([
+               'title', 'description', 'outlet_id', 'assignedByUid', 'assignedToUid',
+               'taskType', 'event_id', 'status', 'dueAt', 'proofText', 'proofImageUrl',
+               'proofImagePath', 'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'title', 'description', 'outlet_id', 'assignedByUid', 'assignedToUid',
+               'taskType', 'event_id', 'status', 'dueAt', 'proofText', 'proofImageUrl',
+               'proofImagePath', 'createdAt', 'updatedAt'
+             ]) &&
+             isNonEmptyString(data.title) &&
+             data.description is string &&
+             isNonEmptyString(data.outlet_id) &&
+             isNonEmptyString(data.assignedByUid) &&
+             data.assignedToUid is string &&
+             data.taskType is string &&
+             data.taskType in ['mall_display', 'voucher_follow_up', 'general'] &&
+             data.event_id is string &&
+             data.status is string &&
+             data.status in ['assigned', 'in_progress', 'proof_submitted', 'approved', 'rejected', 'completed'] &&
+             data.dueAt is timestamp &&
+             data.proofText is string &&
+             data.proofImageUrl is string &&
+             data.proofImagePath is string &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isSupervisorTaskUpdate() {
+      return isSupervisorForOutletId(existing().outlet_id) &&
+             existing().assignedToUid == request.auth.uid &&
+             isValidTaskDoc(incoming()) &&
+             incoming().outlet_id == existing().outlet_id &&
+             incoming().assignedByUid == existing().assignedByUid &&
+             incoming().assignedToUid == existing().assignedToUid &&
+             incoming().title == existing().title &&
+             incoming().description == existing().description &&
+             incoming().taskType == existing().taskType &&
+             incoming().event_id == existing().event_id &&
+             incoming().dueAt == existing().dueAt &&
+             incoming().createdAt == existing().createdAt &&
+             incoming().diff(existing()).affectedKeys().hasOnly([
+               'status', 'proofText', 'proofImageUrl', 'proofImagePath', 'updatedAt'
+             ]) &&
+             incoming().status in ['in_progress', 'proof_submitted', 'completed'] &&
+             incoming().updatedAt == request.time;
+    }
+
+    function isValidFinancialDoc(data) {
+      return data.keys().hasAll([
+               'outlet_id', 'month', 'currency', 'salesTotal', 'marketingBudget',
+               'budgetRate', 'csvFileName', 'csvBatchId', 'uploadedByUid',
+               'grabGrossSales', 'grabCommission', 'grabPromoCost', 'grabOtherFees', 'grabNetProfit',
+               'foodpandaGrossSales', 'foodpandaCommission', 'foodpandaPromoCost', 'foodpandaOtherFees', 'foodpandaNetProfit',
+               'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'outlet_id', 'month', 'currency', 'salesTotal', 'marketingBudget',
+               'budgetRate', 'csvFileName', 'csvBatchId', 'uploadedByUid',
+               'grabGrossSales', 'grabCommission', 'grabPromoCost', 'grabOtherFees', 'grabNetProfit',
+               'foodpandaGrossSales', 'foodpandaCommission', 'foodpandaPromoCost', 'foodpandaOtherFees', 'foodpandaNetProfit',
+               'createdAt', 'updatedAt'
+             ]) &&
+             isNonEmptyString(data.outlet_id) &&
+             isMonthKey(data.month) &&
+             data.currency == 'MYR' &&
+             isNumber(data.salesTotal) && data.salesTotal >= 0 &&
+             isNumber(data.marketingBudget) && data.marketingBudget >= 0 &&
+             isNumber(data.budgetRate) && data.budgetRate == 0.02 &&
+             isNonEmptyString(data.csvFileName) &&
+             isNonEmptyString(data.csvBatchId) &&
+             isNonEmptyString(data.uploadedByUid) &&
+             isNumber(data.grabGrossSales) && data.grabGrossSales >= 0 &&
+             isNumber(data.grabCommission) && data.grabCommission >= 0 &&
+             isNumber(data.grabPromoCost) && data.grabPromoCost >= 0 &&
+             isNumber(data.grabOtherFees) && data.grabOtherFees >= 0 &&
+             isNumber(data.grabNetProfit) &&
+             isNumber(data.foodpandaGrossSales) && data.foodpandaGrossSales >= 0 &&
+             isNumber(data.foodpandaCommission) && data.foodpandaCommission >= 0 &&
+             isNumber(data.foodpandaPromoCost) && data.foodpandaPromoCost >= 0 &&
+             isNumber(data.foodpandaOtherFees) && data.foodpandaOtherFees >= 0 &&
+             isNumber(data.foodpandaNetProfit) &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidVoucherDoc(data) {
+      return data.keys().hasAll([
+               'outlet_id', 'loggedByUid', 'voucherType', 'amount',
+               'notes', 'usedAt', 'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'outlet_id', 'loggedByUid', 'voucherType', 'amount',
+               'notes', 'usedAt', 'createdAt', 'updatedAt'
+             ]) &&
+             isNonEmptyString(data.outlet_id) &&
+             isNonEmptyString(data.loggedByUid) &&
+             data.voucherType is string &&
+             data.voucherType in ['grab', 'foodpanda', 'instore', 'campaign', 'other'] &&
+             isNumber(data.amount) && data.amount > 0 &&
+             data.notes is string &&
+             data.usedAt is timestamp &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isSupervisorVoucherWrite() {
+      return isSupervisorForOutletId(incoming().outlet_id) &&
+             isValidVoucherDoc(incoming()) &&
+             incoming().loggedByUid == request.auth.uid;
+    }
+
+    function isValidMascotBookingDoc(data) {
+      return data.keys().hasAll([
+               'outlet_id', 'requestedByUid', 'title', 'location', 'requestNote',
+               'startAt', 'endAt', 'status', 'adminNote', 'approvedByUid',
+               'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'outlet_id', 'requestedByUid', 'title', 'location', 'requestNote',
+               'startAt', 'endAt', 'status', 'adminNote', 'approvedByUid',
+               'createdAt', 'updatedAt'
+             ]) &&
+             isNonEmptyString(data.outlet_id) &&
+             isNonEmptyString(data.requestedByUid) &&
+             isNonEmptyString(data.title) &&
+             isNonEmptyString(data.location) &&
+             data.requestNote is string &&
+             data.startAt is timestamp &&
+             data.endAt is timestamp &&
+             data.status is string &&
+             data.status in ['pending', 'approved', 'rejected', 'cancelled'] &&
+             data.adminNote is string &&
+             data.approvedByUid is string &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isSupervisorMascotBookingCreate() {
+      return isSupervisorForOutletId(incoming().outlet_id) &&
+             isValidMascotBookingDoc(incoming()) &&
+             incoming().requestedByUid == request.auth.uid &&
+             incoming().status == 'pending' &&
+             incoming().approvedByUid == '' &&
+             incoming().adminNote == '' &&
+             incoming().createdAt == request.time &&
+             incoming().updatedAt == request.time;
+    }
+
+    function isSupervisorMascotBookingUpdate() {
+      return isSupervisorForOutletId(existing().outlet_id) &&
+             existing().requestedByUid == request.auth.uid &&
+             existing().status == 'pending' &&
+             isValidMascotBookingDoc(incoming()) &&
+             incoming().outlet_id == existing().outlet_id &&
+             incoming().requestedByUid == existing().requestedByUid &&
+             incoming().approvedByUid == existing().approvedByUid &&
+             incoming().adminNote == existing().adminNote &&
+             incoming().createdAt == existing().createdAt &&
+             incoming().diff(existing()).affectedKeys().hasOnly([
+               'title', 'location', 'requestNote', 'startAt', 'endAt', 'status', 'updatedAt'
+             ]) &&
+             incoming().status in ['pending', 'cancelled'] &&
+             incoming().updatedAt == request.time;
+    }
+
+    function isSupervisorMallDisplayUpdate() {
+      return isSupervisorForDocument(existing()) &&
+             documentOutletId(incoming()) == documentOutletId(existing()) &&
+             incoming().createdAt == existing().createdAt &&
+             incoming().updatedAt == request.time &&
+             incoming().diff(existing()).affectedKeys().hasOnly([
+               'currentStatus', 'remarks', 'proofText', 'proofImageUrl', 'proofImagePath', 'updatedAt'
+             ]);
+    }
+
+    match /campaigns/{campaignId} {
+      allow read: if isOperationalReader();
+      allow create, update, delete: if isAdmin();
+
+      match /checklist/{itemId} {
+        allow read: if isOperationalReader();
+        allow create, update, delete: if isAdmin();
+      }
+    }
+
+    match /partnerships/{partnershipId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /mall_displays/{displayId} {
+      allow read: if isAdmin() || isFinance() || isSupervisorForDocument(resource.data);
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() || isSupervisorMallDisplayUpdate();
+    }
+
+    match /events/{eventId} {
+      allow read: if isOperationalReader();
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /mascot_logs/{logId} {
+      allow read: if isOperationalReader();
+      allow create, update, delete: if isAdmin() || isSupervisor();
+    }
+
+    match /blog_outreach/{id} {
+      allow read, write: if isAdmin();
+    }
+
+    match /delivery_promos/{id} {
+      allow read: if isOperationalReader();
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /social_posts/{id} {
+      allow read: if isOperationalReader();
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /paid_ads/{id} {
+      allow read: if isOperationalReader();
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /ad_hoc_tasks/{id} {
+      allow read, write: if isAdmin();
+    }
+
+    match /checklistTemplates/{templateId} {
+      allow read: if isAdmin() || isSupervisor();
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /tasks/{taskId} {
+      allow read: if isAdmin() || isSupervisorForOutletId(resource.data.outlet_id);
+      allow create: if isAdmin() &&
+                    isValidTaskDoc(incoming()) &&
+                    incoming().assignedByUid == request.auth.uid &&
+                    incoming().createdAt == request.time &&
+                    incoming().updatedAt == request.time;
+      allow update: if (isAdmin() &&
+                        isValidTaskDoc(incoming()) &&
+                        incoming().createdAt == existing().createdAt &&
+                        incoming().updatedAt == request.time) ||
+                       isSupervisorTaskUpdate();
+      allow delete: if isAdmin();
+    }
+
+    match /financials/{financialId} {
+      allow read: if isAdmin() || isFinance();
+      allow create: if isAdmin() &&
+                    isValidFinancialDoc(incoming()) &&
+                    incoming().uploadedByUid == request.auth.uid &&
+                    incoming().createdAt == request.time &&
+                    incoming().updatedAt == request.time;
+      allow update: if isAdmin() &&
+                    isValidFinancialDoc(incoming()) &&
+                    incoming().uploadedByUid == request.auth.uid &&
+                    incoming().createdAt == existing().createdAt &&
+                    incoming().updatedAt == request.time;
+      allow delete: if isAdmin();
+    }
+
+    match /vouchers/{voucherId} {
+      allow read: if isAdmin() ||
+                  isFinance() ||
+                  isSupervisorForOutletId(resource.data.outlet_id);
+      allow create: if (isAdmin() &&
+                        isValidVoucherDoc(incoming()) &&
+                        incoming().loggedByUid == request.auth.uid &&
+                        incoming().createdAt == request.time &&
+                        incoming().updatedAt == request.time) ||
+                       (isSupervisorVoucherWrite() &&
+                        incoming().createdAt == request.time &&
+                        incoming().updatedAt == request.time);
+      allow update: if (isAdmin() &&
+                        isValidVoucherDoc(incoming()) &&
+                        incoming().createdAt == existing().createdAt &&
+                        incoming().updatedAt == request.time) ||
+                       (isSupervisorVoucherWrite() &&
+                        existing().loggedByUid == request.auth.uid &&
+                        incoming().createdAt == existing().createdAt &&
+                        incoming().outlet_id == existing().outlet_id &&
+                        incoming().updatedAt == request.time);
+      allow delete: if isAdmin();
+    }
+
+    match /mascot_bookings/{bookingId} {
+      allow read: if isAdmin() || isSupervisorForOutletId(resource.data.outlet_id);
+      allow create: if (isAdmin() &&
+                        isValidMascotBookingDoc(incoming()) &&
+                        incoming().requestedByUid == request.auth.uid &&
+                        incoming().createdAt == request.time &&
+                        incoming().updatedAt == request.time) ||
+                       isSupervisorMascotBookingCreate();
+      allow update: if (isAdmin() &&
+                        isValidMascotBookingDoc(incoming()) &&
+                        incoming().outlet_id == existing().outlet_id &&
+                        incoming().requestedByUid == existing().requestedByUid &&
+                        incoming().createdAt == existing().createdAt &&
+                        incoming().updatedAt == request.time) ||
+                       isSupervisorMascotBookingUpdate();
+      allow delete: if isAdmin();
+    }
+
+    match /users/{userId} {
+      allow get: if isAdmin() || isOwnUserProfile(userId);
+      allow list: if isAdmin();
+      allow create: if isAdmin() || isSelfProvisionedClaimCreate(userId);
+      allow delete: if isAdmin() || isSelfProvisionedClaimDelete(userId);
+      allow update: if isAdmin() || isSelfNameUpdate(userId);
+    }
+
+    match /settings/{id} {
+      allow read: if isAdmin() || isSupervisor();
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /outlets/{outletId} {
+      allow get: if isAdmin() || isSupervisorForOutletId(outletId);
+      allow list: if isAdmin();
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /mascot_schedule/{id} {
+      allow read: if isAdmin() || isSupervisor();
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /{document=**} {
+      allow read, write: if isAdmin();
+    }
+  }
+}

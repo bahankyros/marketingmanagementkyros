@@ -1,0 +1,977 @@
+import React, { useEffect, useMemo, useState } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
+import {
+  Building,
+  Calendar,
+  CalendarDays,
+  CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
+  Clock3,
+  ImageIcon,
+  MapPin,
+  Plus,
+  Upload,
+  X
+} from 'lucide-react';
+import {
+  Timestamp,
+  addDoc,
+  collection,
+  doc,
+  onSnapshot,
+  orderBy,
+  query,
+  serverTimestamp,
+  updateDoc,
+  where
+} from 'firebase/firestore';
+import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
+import { db, storage } from '../lib/firebase';
+import { useAuth } from '../lib/AuthContext';
+import { useCampaigns } from '../lib/useCampaigns';
+
+type EventDecisionStatus = 'Proposed' | 'Reviewing' | 'Approved' | 'Rejected' | 'Completed';
+
+type EventRecord = {
+  id: string;
+  eventName: string;
+  organizer: string;
+  outlet: string;
+  type: string;
+  campaignId: string;
+  decisionStatus: EventDecisionStatus;
+  assignedPic: string;
+  actualAttendance: number;
+  salesGenerated: number;
+  vouchersDistributed: number;
+  vouchersRedeemed: number;
+  notes: string;
+  photos: string;
+  startAt: Date;
+  endAt: Date;
+  proposedDate: string;
+  submitterId: string;
+  createdAt: Timestamp | null;
+  updatedAt: Timestamp | null;
+};
+
+type EventEditorState = {
+  id: string | null;
+  eventName: string;
+  organizer: string;
+  outlet: string;
+  type: string;
+  campaignId: string;
+  decisionStatus: EventDecisionStatus;
+  assignedPic: string;
+  actualAttendance: string;
+  salesGenerated: string;
+  vouchersDistributed: string;
+  vouchersRedeemed: string;
+  notes: string;
+  photos: string;
+  startAt: string;
+  endAt: string;
+  submitterId: string;
+};
+
+type LinkedTaskStatus = 'assigned' | 'in_progress' | 'proof_submitted' | 'approved' | 'rejected' | 'completed';
+
+type LinkedTaskRecord = {
+  id: string;
+  title: string;
+  event_id: string;
+  outlet_id: string;
+  assignedToUid: string;
+  status: LinkedTaskStatus;
+  dueAt: Timestamp | null;
+};
+
+const OUTLET_OPTIONS = ['Mytown', 'Centrepoint', 'Sogo', 'Empire', 'Setia City Mall', 'Eco Grandeur'];
+const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+function pad(value: number) {
+  return value.toString().padStart(2, '0');
+}
+
+function formatDateInput(date: Date) {
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+function toDateTimeLocal(value: Date | Timestamp | string | null | undefined) {
+  if (!value) return '';
+
+  const date = value instanceof Timestamp
+    ? value.toDate()
+    : value instanceof Date
+      ? value
+      : new Date(value);
+
+  if (Number.isNaN(date.getTime())) return '';
+
+  const offset = date.getTimezoneOffset();
+  return new Date(date.getTime() - offset * 60000).toISOString().slice(0, 16);
+}
+
+function parseLegacyEventDate(value: unknown) {
+  if (value instanceof Timestamp) {
+    return value.toDate();
+  }
+
+  if (typeof value === 'string' && value.trim()) {
+    const normalized = value.includes('T') ? value : `${value}T10:00`;
+    const parsed = new Date(normalized);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed;
+    }
+  }
+
+  return null;
+}
+
+function createDefaultEventDate(baseDate?: Date) {
+  const seed = baseDate ? new Date(baseDate) : new Date();
+  seed.setHours(10, 0, 0, 0);
+
+  const end = new Date(seed);
+  end.setHours(end.getHours() + 2);
+
+  return {
+    startAt: toDateTimeLocal(seed),
+    endAt: toDateTimeLocal(end)
+  };
+}
+
+function buildEmptyEditor(baseDate?: Date): EventEditorState {
+  const dates = createDefaultEventDate(baseDate);
+
+  return {
+    id: null,
+    eventName: '',
+    organizer: '',
+    outlet: OUTLET_OPTIONS[0],
+    type: 'Internal',
+    campaignId: '',
+    decisionStatus: 'Proposed',
+    assignedPic: '',
+    actualAttendance: '',
+    salesGenerated: '',
+    vouchersDistributed: '',
+    vouchersRedeemed: '',
+    notes: '',
+    photos: '',
+    startAt: dates.startAt,
+    endAt: dates.endAt,
+    submitterId: ''
+  };
+}
+
+function buildEditorFromEvent(event: EventRecord): EventEditorState {
+  return {
+    id: event.id,
+    eventName: event.eventName,
+    organizer: event.organizer,
+    outlet: event.outlet,
+    type: event.type,
+    campaignId: event.campaignId,
+    decisionStatus: event.decisionStatus,
+    assignedPic: event.assignedPic,
+    actualAttendance: event.actualAttendance ? event.actualAttendance.toString() : '',
+    salesGenerated: event.salesGenerated ? event.salesGenerated.toString() : '',
+    vouchersDistributed: event.vouchersDistributed ? event.vouchersDistributed.toString() : '',
+    vouchersRedeemed: event.vouchersRedeemed ? event.vouchersRedeemed.toString() : '',
+    notes: event.notes,
+    photos: event.photos,
+    startAt: toDateTimeLocal(event.startAt),
+    endAt: toDateTimeLocal(event.endAt),
+    submitterId: event.submitterId
+  };
+}
+
+function isSameDay(left: Date, right: Date) {
+  return left.getFullYear() === right.getFullYear() &&
+         left.getMonth() === right.getMonth() &&
+         left.getDate() === right.getDate();
+}
+
+function startOfMonth(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), 1);
+}
+
+function normalizeEvent(raw: any, id: string): EventRecord {
+  const fallbackStart = parseLegacyEventDate(raw.startAt) || parseLegacyEventDate(raw.proposedDate) || new Date();
+  const fallbackEnd = parseLegacyEventDate(raw.endAt) || new Date(fallbackStart.getTime() + 2 * 60 * 60 * 1000);
+
+  return {
+    id,
+    eventName: typeof raw.eventName === 'string' ? raw.eventName : '',
+    organizer: typeof raw.organizer === 'string' ? raw.organizer : '',
+    outlet: typeof raw.outlet === 'string' ? raw.outlet : '',
+    type: typeof raw.type === 'string' ? raw.type : 'Internal',
+    campaignId: typeof raw.campaignId === 'string' ? raw.campaignId : '',
+    decisionStatus: (raw.decisionStatus as EventDecisionStatus) || 'Proposed',
+    assignedPic: typeof raw.assignedPic === 'string' ? raw.assignedPic : '',
+    actualAttendance: Number(raw.actualAttendance) || 0,
+    salesGenerated: Number(raw.salesGenerated) || 0,
+    vouchersDistributed: Number(raw.vouchersDistributed) || 0,
+    vouchersRedeemed: Number(raw.vouchersRedeemed) || 0,
+    notes: typeof raw.notes === 'string' ? raw.notes : '',
+    photos: typeof raw.photos === 'string' ? raw.photos : '',
+    startAt: fallbackStart,
+    endAt: fallbackEnd,
+    proposedDate: typeof raw.proposedDate === 'string' && raw.proposedDate
+      ? raw.proposedDate
+      : formatDateInput(fallbackStart),
+    submitterId: typeof raw.submitterId === 'string' ? raw.submitterId : '',
+    createdAt: raw.createdAt instanceof Timestamp ? raw.createdAt : null,
+    updatedAt: raw.updatedAt instanceof Timestamp ? raw.updatedAt : null
+  };
+}
+
+function linkedTaskStatusTone(status: LinkedTaskStatus) {
+  switch (status) {
+    case 'completed':
+      return 'bg-emerald-100 text-emerald-700';
+    case 'approved':
+      return 'bg-blue-100 text-blue-700';
+    case 'rejected':
+      return 'bg-rose-100 text-rose-700';
+    case 'proof_submitted':
+      return 'bg-amber-100 text-amber-700';
+    case 'in_progress':
+      return 'bg-indigo-100 text-indigo-700';
+    default:
+      return 'bg-neutral-100 text-neutral-700';
+  }
+}
+
+export function Events() {
+  const { user, userData } = useAuth();
+  const { campaigns } = useCampaigns();
+  const role = userData?.role;
+  const canManageEvents = role === 'admin';
+  const canViewEvents = role === 'admin' || role === 'supervisor' || role === 'finance';
+  const canSeeLinkedTasks = role === 'admin' || role === 'supervisor';
+
+  const [events, setEvents] = useState<EventRecord[]>([]);
+  const [linkedTasks, setLinkedTasks] = useState<LinkedTaskRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [currentMonth, setCurrentMonth] = useState(() => startOfMonth(new Date()));
+  const [selectedDate, setSelectedDate] = useState(() => new Date());
+  const [editorState, setEditorState] = useState<EventEditorState | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (!user || !canViewEvents) {
+      setEvents([]);
+      setLoading(false);
+      return;
+    }
+
+    const unsubscribe = onSnapshot(
+      query(collection(db, 'events'), orderBy('createdAt', 'desc')),
+      (snapshot) => {
+        const mapped = snapshot.docs
+          .map((eventDoc) => normalizeEvent(eventDoc.data(), eventDoc.id))
+          .sort((left, right) => left.startAt.getTime() - right.startAt.getTime());
+
+        setEvents(mapped);
+        setLoading(false);
+      },
+      (error) => {
+        console.error('Error fetching events:', error);
+        setLoading(false);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [user, canViewEvents]);
+
+  useEffect(() => {
+    if (!user || !canSeeLinkedTasks) {
+      setLinkedTasks([]);
+      return;
+    }
+
+    const tasksQuery = role === 'admin'
+      ? query(collection(db, 'tasks'), orderBy('createdAt', 'desc'))
+      : query(collection(db, 'tasks'), where('assignedToUid', '==', user.uid));
+
+    const unsubscribe = onSnapshot(tasksQuery, (snapshot) => {
+      const mapped = snapshot.docs.map((taskDoc) => {
+        const taskData = taskDoc.data();
+        return {
+          id: taskDoc.id,
+          title: typeof taskData.title === 'string' ? taskData.title : '',
+          event_id: typeof taskData.event_id === 'string' ? taskData.event_id : '',
+          outlet_id: typeof taskData.outlet_id === 'string' ? taskData.outlet_id : '',
+          assignedToUid: typeof taskData.assignedToUid === 'string' ? taskData.assignedToUid : '',
+          status: taskData.status as LinkedTaskStatus,
+          dueAt: taskData.dueAt instanceof Timestamp ? taskData.dueAt : null
+        } satisfies LinkedTaskRecord;
+      });
+
+      setLinkedTasks(mapped);
+    }, (error) => {
+      console.error('Error fetching linked tasks:', error);
+      setLinkedTasks([]);
+    });
+
+    return () => unsubscribe();
+  }, [user, role, canSeeLinkedTasks]);
+
+  const calendarDays = useMemo(() => {
+    const monthStart = startOfMonth(currentMonth);
+    const gridStart = new Date(monthStart);
+    gridStart.setDate(monthStart.getDate() - monthStart.getDay());
+
+    return Array.from({ length: 42 }).map((_, index) => {
+      const cellDate = new Date(gridStart);
+      cellDate.setDate(gridStart.getDate() + index);
+      return cellDate;
+    });
+  }, [currentMonth]);
+
+  const eventsForSelectedDate = useMemo(
+    () => events.filter((event) => isSameDay(event.startAt, selectedDate)),
+    [events, selectedDate]
+  );
+
+  const linkedTaskCountByEventId = useMemo(() => {
+    const taskCountMap = new Map<string, number>();
+
+    linkedTasks.forEach((task) => {
+      if (!task.event_id) return;
+      taskCountMap.set(task.event_id, (taskCountMap.get(task.event_id) || 0) + 1);
+    });
+
+    return taskCountMap;
+  }, [linkedTasks]);
+
+  const linkedTasksForEditor = useMemo(() => {
+    if (!editorState?.id || !canSeeLinkedTasks) return [];
+    return linkedTasks
+      .filter((task) => task.event_id === editorState.id)
+      .sort((left, right) => {
+        const leftTime = left.dueAt?.toMillis() || 0;
+        const rightTime = right.dueAt?.toMillis() || 0;
+        return leftTime - rightTime;
+      });
+  }, [editorState?.id, linkedTasks, canSeeLinkedTasks]);
+
+  const openCreateEvent = (baseDate?: Date) => {
+    if (!canManageEvents) return;
+    setEditorState(buildEmptyEditor(baseDate));
+  };
+
+  const openExistingEvent = (event: EventRecord) => {
+    setEditorState(buildEditorFromEvent(event));
+  };
+
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file || !editorState?.id || !canManageEvents) return;
+
+    setIsUploading(true);
+    try {
+      const storageRef = ref(storage, `events/${editorState.id}/proofs/${Date.now()}-${file.name}`);
+      await uploadBytes(storageRef, file);
+      const url = await getDownloadURL(storageRef);
+      setEditorState((current) => current ? { ...current, photos: url } : current);
+    } catch (error) {
+      console.error('Error uploading file:', error);
+      alert('Photo upload failed.');
+    } finally {
+      event.target.value = '';
+      setIsUploading(false);
+    }
+  };
+
+  const handleSaveEvent = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!editorState || !canManageEvents || !user) return;
+
+    const startDate = new Date(editorState.startAt);
+    const endDate = new Date(editorState.endAt);
+
+    if (
+      !editorState.eventName.trim() ||
+      !editorState.organizer.trim() ||
+      !editorState.outlet.trim() ||
+      Number.isNaN(startDate.getTime()) ||
+      Number.isNaN(endDate.getTime()) ||
+      endDate <= startDate
+    ) {
+      alert('Name, organizer, outlet, and valid times are required.');
+      return;
+    }
+
+    const payload = {
+      eventName: editorState.eventName.trim(),
+      organizer: editorState.organizer.trim(),
+      outlet: editorState.outlet.trim(),
+      type: editorState.type.trim() || 'Internal',
+      campaignId: editorState.campaignId.trim(),
+      decisionStatus: editorState.decisionStatus,
+      assignedPic: editorState.assignedPic.trim(),
+      actualAttendance: Number(editorState.actualAttendance) || 0,
+      salesGenerated: Number(editorState.salesGenerated) || 0,
+      vouchersDistributed: Number(editorState.vouchersDistributed) || 0,
+      vouchersRedeemed: Number(editorState.vouchersRedeemed) || 0,
+      notes: editorState.notes.trim(),
+      photos: editorState.photos,
+      startAt: Timestamp.fromDate(startDate),
+      endAt: Timestamp.fromDate(endDate),
+      proposedDate: formatDateInput(startDate)
+    };
+
+    setSubmitting(true);
+    try {
+      if (editorState.id) {
+        await updateDoc(doc(db, 'events', editorState.id), {
+          ...payload,
+          updatedAt: serverTimestamp()
+        });
+      } else {
+        await addDoc(collection(db, 'events'), {
+          ...payload,
+          submitterId: user.uid,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp()
+        });
+      }
+
+      setEditorState(null);
+    } catch (error) {
+      console.error('Error saving event:', error);
+      alert('Event save failed.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6 pb-12">
+      <header className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight text-neutral-900">Event Calendar</h1>
+          <p className="mt-1 text-neutral-500">Plan outlet activity on a live calendar.</p>
+        </div>
+        {canManageEvents ? (
+          <button
+            type="button"
+            onClick={() => openCreateEvent(selectedDate)}
+            className="inline-flex items-center gap-2 rounded-lg bg-emerald-500 px-4 py-2 font-medium text-white shadow-sm transition-colors hover:bg-emerald-600"
+          >
+            <Plus size={18} />
+            Add Event
+          </button>
+        ) : (
+          <div className="rounded-lg border border-neutral-200 bg-white px-4 py-2 text-sm font-medium text-neutral-500">
+            View only
+          </div>
+        )}
+      </header>
+
+      <motion.div
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="grid grid-cols-1 gap-6 xl:grid-cols-[1.6fr_0.9fr]"
+      >
+        <section className="rounded-2xl border border-neutral-100 bg-white p-6 shadow-sm">
+          <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+            <div>
+              <h2 className="text-xl font-bold text-neutral-900 flex items-center gap-2">
+                <CalendarDays className="w-5 h-5 text-emerald-500" />
+                {currentMonth.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}
+              </h2>
+              <p className="mt-1 text-sm text-neutral-500">
+                Admins can edit. Supervisors and finance can view.
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setCurrentMonth((current) => new Date(current.getFullYear(), current.getMonth() - 1, 1))}
+                className="rounded-lg border border-neutral-200 p-2 text-neutral-600 transition-colors hover:bg-neutral-50"
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const today = new Date();
+                  setCurrentMonth(startOfMonth(today));
+                  setSelectedDate(today);
+                }}
+                className="rounded-lg border border-neutral-200 px-3 py-2 text-sm font-medium text-neutral-700 transition-colors hover:bg-neutral-50"
+              >
+                Today
+              </button>
+              <button
+                type="button"
+                onClick={() => setCurrentMonth((current) => new Date(current.getFullYear(), current.getMonth() + 1, 1))}
+                className="rounded-lg border border-neutral-200 p-2 text-neutral-600 transition-colors hover:bg-neutral-50"
+              >
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+
+          {loading ? (
+            <p className="text-neutral-500">Loading calendar...</p>
+          ) : (
+            <div className="space-y-3">
+              <div className="grid grid-cols-7 gap-2">
+                {WEEKDAY_LABELS.map((day) => (
+                  <div key={day} className="px-2 py-1 text-xs font-bold uppercase tracking-wider text-neutral-400">
+                    {day}
+                  </div>
+                ))}
+              </div>
+              <div className="grid grid-cols-7 gap-2">
+                {calendarDays.map((day) => {
+                  const dayEvents = events.filter((evt) => isSameDay(evt.startAt, day));
+                  const isCurrentMonth = day.getMonth() === currentMonth.getMonth();
+                  const isSelected = isSameDay(day, selectedDate);
+                  const isToday = isSameDay(day, new Date());
+
+                  return (
+                    <button
+                      key={`${day.toISOString()}-${dayEvents.length}`}
+                      type="button"
+                      onClick={() => {
+                        setSelectedDate(day);
+                        if (canManageEvents && dayEvents.length === 0 && isCurrentMonth) {
+                          return;
+                        }
+                      }}
+                      className={`min-h-[132px] rounded-2xl border p-3 text-left transition-colors ${
+                        isSelected
+                          ? 'border-emerald-300 bg-emerald-50'
+                          : 'border-neutral-100 bg-white hover:bg-neutral-50'
+                      } ${!isCurrentMonth ? 'opacity-40' : ''}`}
+                    >
+                      <div className="mb-3 flex items-center justify-between">
+                        <span className={`text-sm font-bold ${isToday ? 'text-emerald-600' : 'text-neutral-900'}`}>
+                          {day.getDate()}
+                        </span>
+                        {dayEvents.length > 0 && (
+                          <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-neutral-600">
+                            {dayEvents.length} event{dayEvents.length === 1 ? '' : 's'}
+                          </span>
+                        )}
+                      </div>
+                      <div className="space-y-2">
+                        {dayEvents.slice(0, 2).map((evt) => (
+                          <div
+                            key={evt.id}
+                            onClick={(clickEvent) => {
+                              clickEvent.stopPropagation();
+                              openExistingEvent(evt);
+                            }}
+                            className="rounded-xl border border-neutral-200 bg-white px-2.5 py-2 text-xs shadow-sm"
+                          >
+                            <p className="font-semibold text-neutral-900 truncate">{evt.eventName}</p>
+                            <p className="mt-1 text-neutral-500 truncate">
+                              {evt.startAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </p>
+                          </div>
+                        ))}
+                        {dayEvents.length > 2 && (
+                          <p className="text-[11px] font-medium text-neutral-500">+{dayEvents.length - 2} more</p>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </section>
+
+        <section className="rounded-2xl border border-neutral-100 bg-white p-6 shadow-sm">
+          <div className="mb-5 flex items-center justify-between">
+            <div>
+              <h2 className="text-lg font-bold text-neutral-900">
+                {selectedDate.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })}
+              </h2>
+              <p className="mt-1 text-sm text-neutral-500">Events scheduled for the selected day.</p>
+            </div>
+            {canManageEvents && (
+              <button
+                type="button"
+                onClick={() => openCreateEvent(selectedDate)}
+                className="rounded-lg border border-neutral-200 px-3 py-2 text-sm font-medium text-neutral-700 transition-colors hover:bg-neutral-50"
+              >
+                Add on Day
+              </button>
+            )}
+          </div>
+
+          <div className="space-y-4">
+            {eventsForSelectedDate.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-neutral-200 bg-neutral-50 p-8 text-center">
+                <Calendar className="mx-auto h-10 w-10 text-neutral-300 mb-4" />
+                <p className="text-sm font-medium text-neutral-900">No events on this day</p>
+                <p className="mt-2 text-sm text-neutral-500">
+                  {canManageEvents
+                    ? 'Use Add on Day to create a new event with start and end times.'
+                    : 'Admins can add event records to this calendar.'}
+                </p>
+              </div>
+            ) : (
+              eventsForSelectedDate.map((evt) => (
+                <button
+                  key={evt.id}
+                  type="button"
+                  onClick={() => openExistingEvent(evt)}
+                  className="w-full rounded-2xl border border-neutral-100 p-4 text-left transition-colors hover:bg-neutral-50"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-base font-bold text-neutral-900">{evt.eventName}</p>
+                      <p className="mt-1 text-sm text-neutral-500">{evt.organizer || 'No organizer recorded'}</p>
+                    </div>
+                    <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider ${
+                      evt.decisionStatus === 'Approved'
+                        ? 'bg-emerald-100 text-emerald-700'
+                        : evt.decisionStatus === 'Reviewing'
+                          ? 'bg-blue-100 text-blue-700'
+                          : evt.decisionStatus === 'Rejected'
+                            ? 'bg-rose-100 text-rose-700'
+                            : evt.decisionStatus === 'Completed'
+                              ? 'bg-indigo-100 text-indigo-700'
+                              : 'bg-amber-100 text-amber-700'
+                    }`}>
+                      {evt.decisionStatus}
+                    </span>
+                  </div>
+                  <div className="mt-4 space-y-2 text-sm text-neutral-500">
+                    <p className="flex items-center gap-2">
+                      <Clock3 className="w-4 h-4" />
+                      {evt.startAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} - {evt.endAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </p>
+                    <p className="flex items-center gap-2">
+                      <MapPin className="w-4 h-4" />
+                      {evt.outlet}
+                    </p>
+                    <p className="flex items-center gap-2">
+                      <Building className="w-4 h-4" />
+                      {evt.type}
+                    </p>
+                    {canSeeLinkedTasks && (
+                      <p className="flex items-center gap-2">
+                        <CheckCircle2 className="w-4 h-4" />
+                        {linkedTaskCountByEventId.get(evt.id) || 0} linked task{linkedTaskCountByEventId.get(evt.id) === 1 ? '' : 's'}
+                      </p>
+                    )}
+                  </div>
+                </button>
+              ))
+            )}
+          </div>
+        </section>
+      </motion.div>
+
+      <AnimatePresence>
+        {editorState && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setEditorState(null)}
+              className="fixed inset-0 bg-neutral-900/30 backdrop-blur-sm z-40"
+            />
+            <motion.div
+              initial={{ x: '100%' }}
+              animate={{ x: 0 }}
+              exit={{ x: '100%' }}
+              transition={{ type: 'spring', bounce: 0, duration: 0.3 }}
+              className="fixed right-0 top-0 bottom-0 w-full max-w-md bg-white shadow-2xl z-50 border-l border-neutral-200 flex flex-col"
+            >
+              <div className="px-6 py-4 border-b border-neutral-100 flex items-center justify-between bg-neutral-50">
+                <div>
+                  <h3 className="font-bold text-neutral-900 text-lg">
+                    {editorState.id ? (canManageEvents ? 'Edit Event' : 'Event Details') : 'Add Event'}
+                  </h3>
+                  <p className="text-sm text-neutral-500 font-mono mt-0.5">
+                    {editorState.eventName || 'Event record'}
+                  </p>
+                </div>
+                <button onClick={() => setEditorState(null)} className="p-2 hover:bg-neutral-200 rounded-lg text-neutral-500 transition-colors">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-6">
+                <form id="event-form" onSubmit={handleSaveEvent} className="space-y-5">
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-neutral-700">Name</label>
+                    <input
+                      type="text"
+                      value={editorState.eventName}
+                      onChange={e => setEditorState({ ...editorState, eventName: e.target.value })}
+                      disabled={!canManageEvents}
+                      className="w-full p-2.5 bg-neutral-50 border border-neutral-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500 disabled:bg-neutral-100 disabled:text-neutral-500"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <label className="text-sm font-medium text-neutral-700">Organizer</label>
+                      <select
+                        value={editorState.organizer}
+                        onChange={e => setEditorState({ ...editorState, organizer: e.target.value })}
+                        disabled={!canManageEvents}
+                        className="w-full p-2.5 bg-neutral-50 border border-neutral-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500 disabled:bg-neutral-100 disabled:text-neutral-500"
+                      >
+                        <option value="">Select source</option>
+                        <option value="Mall Management">Mall Management</option>
+                        <option value="Partner">Partner</option>
+                        <option value="Delivery Platform">Delivery Platform</option>
+                        <option value="External Organizer">External Organizer</option>
+                        <option value="Internal">Internal</option>
+                      </select>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-sm font-medium text-neutral-700">Outlet</label>
+                      <select
+                        value={editorState.outlet}
+                        onChange={e => setEditorState({ ...editorState, outlet: e.target.value })}
+                        disabled={!canManageEvents}
+                        className="w-full p-2.5 bg-neutral-50 border border-neutral-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500 disabled:bg-neutral-100 disabled:text-neutral-500"
+                      >
+                        {OUTLET_OPTIONS.map((outlet) => (
+                          <option key={outlet} value={outlet}>{outlet}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <label className="text-sm font-medium text-neutral-700">Start</label>
+                      <input
+                        type="datetime-local"
+                        value={editorState.startAt}
+                        onChange={e => setEditorState({ ...editorState, startAt: e.target.value })}
+                        disabled={!canManageEvents}
+                        className="w-full p-2.5 bg-neutral-50 border border-neutral-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500 disabled:bg-neutral-100 disabled:text-neutral-500"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-sm font-medium text-neutral-700">End</label>
+                      <input
+                        type="datetime-local"
+                        value={editorState.endAt}
+                        onChange={e => setEditorState({ ...editorState, endAt: e.target.value })}
+                        disabled={!canManageEvents}
+                        className="w-full p-2.5 bg-neutral-50 border border-neutral-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500 disabled:bg-neutral-100 disabled:text-neutral-500"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <label className="text-sm font-medium text-neutral-700">Type</label>
+                      <input
+                        type="text"
+                        value={editorState.type}
+                        onChange={e => setEditorState({ ...editorState, type: e.target.value })}
+                        disabled={!canManageEvents}
+                        className="w-full p-2.5 bg-neutral-50 border border-neutral-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500 disabled:bg-neutral-100 disabled:text-neutral-500"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-sm font-medium text-neutral-700">Campaign</label>
+                      <select
+                        value={editorState.campaignId}
+                        onChange={e => setEditorState({ ...editorState, campaignId: e.target.value })}
+                        disabled={!canManageEvents}
+                        className="w-full p-2.5 bg-neutral-50 border border-neutral-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500 disabled:bg-neutral-100 disabled:text-neutral-500"
+                      >
+                        <option value="">None / standalone</option>
+                        {campaigns.map((campaign) => (
+                          <option key={campaign.id} value={campaign.name}>{campaign.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-neutral-700">Status</label>
+                    <select
+                      value={editorState.decisionStatus}
+                      onChange={e => setEditorState({ ...editorState, decisionStatus: e.target.value as EventDecisionStatus })}
+                      disabled={!canManageEvents}
+                      className="w-full p-2.5 bg-neutral-50 border border-neutral-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500 disabled:bg-neutral-100 disabled:text-neutral-500"
+                    >
+                      <option value="Proposed">Proposed</option>
+                      <option value="Reviewing">Reviewing</option>
+                      <option value="Approved">Approved</option>
+                      <option value="Rejected">Rejected</option>
+                      <option value="Completed">Completed</option>
+                    </select>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-neutral-700">Assigned PIC</label>
+                    <input
+                      type="text"
+                      value={editorState.assignedPic}
+                      onChange={e => setEditorState({ ...editorState, assignedPic: e.target.value })}
+                      disabled={!canManageEvents}
+                      className="w-full p-2.5 bg-neutral-50 border border-neutral-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500 disabled:bg-neutral-100 disabled:text-neutral-500"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                    <label className="text-sm font-medium text-neutral-700">Attendance</label>
+                      <input
+                        type="number"
+                        value={editorState.actualAttendance}
+                        onChange={e => setEditorState({ ...editorState, actualAttendance: e.target.value })}
+                        disabled={!canManageEvents}
+                        className="w-full p-2.5 bg-neutral-50 border border-neutral-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500 disabled:bg-neutral-100 disabled:text-neutral-500"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                        <label className="text-sm font-medium text-neutral-700">Sales</label>
+                      <input
+                        type="number"
+                        value={editorState.salesGenerated}
+                        onChange={e => setEditorState({ ...editorState, salesGenerated: e.target.value })}
+                        disabled={!canManageEvents}
+                        className="w-full p-2.5 bg-neutral-50 border border-neutral-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500 disabled:bg-neutral-100 disabled:text-neutral-500"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                        <label className="text-sm font-medium text-neutral-700">Vouchers Sent</label>
+                      <input
+                        type="number"
+                        value={editorState.vouchersDistributed}
+                        onChange={e => setEditorState({ ...editorState, vouchersDistributed: e.target.value })}
+                        disabled={!canManageEvents}
+                        className="w-full p-2.5 bg-neutral-50 border border-neutral-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500 disabled:bg-neutral-100 disabled:text-neutral-500"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                        <label className="text-sm font-medium text-neutral-700">Vouchers Used</label>
+                      <input
+                        type="number"
+                        value={editorState.vouchersRedeemed}
+                        onChange={e => setEditorState({ ...editorState, vouchersRedeemed: e.target.value })}
+                        disabled={!canManageEvents}
+                        className="w-full p-2.5 bg-neutral-50 border border-neutral-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500 disabled:bg-neutral-100 disabled:text-neutral-500"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-neutral-700">Notes</label>
+                    <textarea
+                      rows={4}
+                      value={editorState.notes}
+                      onChange={e => setEditorState({ ...editorState, notes: e.target.value })}
+                      disabled={!canManageEvents}
+                      className="w-full p-2.5 bg-neutral-50 border border-neutral-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500 resize-none disabled:bg-neutral-100 disabled:text-neutral-500"
+                    />
+                  </div>
+
+                  {editorState.id && canSeeLinkedTasks && (
+                    <div className="space-y-3 rounded-2xl border border-neutral-100 bg-neutral-50 p-4">
+                      <div>
+                        <p className="text-sm font-medium text-neutral-900">Linked Tasks</p>
+                        <p className="mt-1 text-sm text-neutral-500">
+                          Tasks linked through <span className="font-mono">tasks.event_id</span>.
+                        </p>
+                      </div>
+
+                      {linkedTasksForEditor.length === 0 ? (
+                        <div className="rounded-xl border border-dashed border-neutral-200 bg-white p-4 text-sm text-neutral-500">
+                          No linked tasks yet.
+                        </div>
+                      ) : (
+                        <div className="space-y-3">
+                          {linkedTasksForEditor.map((task) => (
+                            <div key={task.id} className="rounded-xl border border-neutral-200 bg-white p-4">
+                              <div className="flex items-start justify-between gap-3">
+                                <div>
+                                  <p className="font-medium text-neutral-900">{task.title}</p>
+                                  <p className="mt-1 text-sm text-neutral-500">
+                                    {task.dueAt ? `Due ${task.dueAt.toDate().toLocaleString()}` : 'No due date'}
+                                  </p>
+                                </div>
+                                <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider ${linkedTaskStatusTone(task.status)}`}>
+                                  {task.status.replace('_', ' ')}
+                                </span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="space-y-2 pt-2 border-t border-neutral-100">
+                    <label className="text-sm font-medium text-neutral-700">Proof photo</label>
+                    <div className="flex items-center gap-4">
+                      {editorState.photos ? (
+                        <a href={editorState.photos} target="_blank" rel="noreferrer" className="w-16 h-16 rounded-xl border border-neutral-200 overflow-hidden block">
+                          <img src={editorState.photos} alt="Proof" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                        </a>
+                      ) : (
+                        <div className="w-16 h-16 rounded-xl border border-dashed border-neutral-300 bg-neutral-50 flex items-center justify-center text-neutral-400">
+                          <ImageIcon className="w-6 h-6" />
+                        </div>
+                      )}
+                      <div className="flex-1">
+                        {canManageEvents && editorState.id ? (
+                          <>
+                            <input type="file" accept="image/*" onChange={handleFileUpload} className="hidden" id="event-photo-upload" disabled={isUploading} />
+                            <label htmlFor="event-photo-upload" className={`cursor-pointer inline-flex items-center gap-2 px-4 py-2 border border-neutral-200 rounded-lg text-sm font-medium transition-colors ${isUploading ? 'opacity-50 cursor-not-allowed bg-neutral-100' : 'bg-white hover:bg-neutral-50 text-neutral-700'}`}>
+                              <Upload className="w-4 h-4" />
+                            {isUploading ? 'Uploading...' : 'Upload photo'}
+                            </label>
+                          </>
+                        ) : (
+                          <p className="text-sm text-neutral-500">
+                            {canManageEvents ? 'Save the event before uploading proof.' : 'Admin only.'}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </form>
+              </div>
+
+              <div className="p-4 border-t border-neutral-100 bg-neutral-50 flex justify-end gap-3">
+                <button onClick={() => setEditorState(null)} className="px-5 py-2 text-neutral-600 font-medium hover:bg-neutral-200 rounded-lg transition-colors">
+                  {canManageEvents ? 'Cancel' : 'Close'}
+                </button>
+                {canManageEvents && (
+                  <button
+                    type="submit"
+                    form="event-form"
+                    disabled={submitting || isUploading}
+                    className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-300 disabled:cursor-not-allowed text-white font-medium rounded-lg shadow-sm transition-colors flex items-center gap-2"
+                  >
+                    <CheckCircle2 className="w-4 h-4" /> {submitting ? 'Saving...' : 'Save'}
+                  </button>
+                )}
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
