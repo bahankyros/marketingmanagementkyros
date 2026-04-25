@@ -3,6 +3,11 @@
 ## Goal
 Align the Ops Control Center under one practical, reusable, responsive UI system without changing product scope or backend behavior.
 
+## Core Contract
+- Supabase Auth is the canonical authentication system for V3.
+- Supabase Postgres is the canonical database and backend system for V3.
+- Firebase Auth, Firestore, Firebase Storage, and Firebase Security Rules are no longer canonical backend systems for V3.
+
 ## Design Principles
 - Keep the interface operational, fast, and audit-friendly.
 - Prioritize clarity, hierarchy, and role-aware actions over decorative styling.
