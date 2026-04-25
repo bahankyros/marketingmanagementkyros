@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { collection, onSnapshot, doc } from 'firebase/firestore';
 import { db } from './firebase';
-import { User } from 'firebase/auth';
+import type { AuthUser } from './AuthContext';
 
 type UserRole = 'admin' | 'supervisor' | 'finance';
 
@@ -72,7 +72,7 @@ function createInitialDashboardData(access: DashboardAccess) {
   };
 }
 
-export function useDashboardData(user: User | null, userRole: UserRole | null | undefined) {
+export function useDashboardData(user: AuthUser | null, userRole: UserRole | null | undefined) {
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState(() => createInitialDashboardData(buildDashboardAccess(userRole)));
 

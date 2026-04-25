@@ -14,6 +14,8 @@ function getAuthErrorMessage(error: any) {
   switch (error?.code) {
     case 'auth/invalid-credential':
       return 'Invalid email or password.';
+    case 'auth/email-not-confirmed':
+      return 'Please confirm your email before signing in.';
     case 'auth/email-already-in-use':
       return 'This email is already registered.';
     case 'auth/weak-password':
@@ -79,6 +81,10 @@ export function Login() {
         await signIn(normalizedEmail, password);
       } else if (mode === 'signUp') {
         await signUp(normalizedEmail, password);
+        setFeedback({
+          tone: 'success',
+          message: 'Account created. Check your inbox if email confirmation is required.'
+        });
       } else {
         await resetPassword(normalizedEmail);
         setFeedback({
