@@ -8,6 +8,7 @@ import {
 import { doc, getDoc, setDoc, serverTimestamp, collection, onSnapshot, addDoc, deleteDoc, updateDoc, query, orderBy, writeBatch, limit } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { useAuth } from '../lib/AuthContext';
+import { supabase } from '../lib/supabase';
 
 const CHECKLIST_TEMPLATE_TYPES = ['Digital', 'Physical', 'Hybrid'] as const;
 const CHECKLIST_TEMPLATE_CATEGORIES = [
@@ -47,6 +48,14 @@ type ManagedUserRecord = {
   outlet_name: string;
   status: ManagedUserStatus;
   photo_url: string;
+};
+
+type OutletRecord = {
+  id: string;
+  name: string;
+  baseSales: number;
+  isActive: boolean;
+  order: number;
 };
 
 type ManagedUserFormState = {
@@ -137,11 +146,15 @@ function normalizeManagedUserRecord(id: string, rawUser: any): ManagedUserRecord
   const outletName = typeof rawUser?.outlet_name === 'string' && rawUser.outlet_name.trim()
     ? rawUser.outlet_name.trim()
     : legacyOutlet;
-  const explicitAuthUid = typeof rawUser?.auth_uid === 'string' ? rawUser.auth_uid.trim() : '';
+  const explicitAuthUid = typeof rawUser?.auth_user_id === 'string' && rawUser.auth_user_id.trim()
+    ? rawUser.auth_user_id.trim()
+    : typeof rawUser?.auth_uid === 'string'
+      ? rawUser.auth_uid.trim()
+      : '';
 
   return {
     id,
-    auth_uid: explicitAuthUid || (email && id === email ? '' : id),
+    auth_uid: explicitAuthUid,
     email,
     display_name: typeof rawUser?.display_name === 'string' ? rawUser.display_name : '',
     role: rawUser.role,
@@ -150,6 +163,32 @@ function normalizeManagedUserRecord(id: string, rawUser: any): ManagedUserRecord
     status: isManagedUserStatus(rawUser?.status) ? rawUser.status : 'active',
     photo_url: typeof rawUser?.photo_url === 'string' ? rawUser.photo_url : ''
   };
+}
+
+function normalizeOutletRecord(rawOutlet: any): OutletRecord | null {
+  const name = typeof rawOutlet?.name === 'string' ? rawOutlet.name.trim() : '';
+  const id = typeof rawOutlet?.id === 'string' ? rawOutlet.id.trim() : '';
+
+  if (!id || !name) {
+    return null;
+  }
+
+  return {
+    id,
+    name,
+    baseSales: Number(rawOutlet?.base_sales ?? rawOutlet?.baseSales ?? 0) || 0,
+    isActive: rawOutlet?.is_active ?? rawOutlet?.isActive ?? true,
+    order: Number(rawOutlet?.display_order ?? rawOutlet?.order ?? 0) || 0
+  };
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function toNullableUuid(value: string) {
+  const normalized = value.trim();
+  return normalized || null;
 }
 
 function getManagedUserProvisioningState(user: ManagedUserRecord) {
@@ -217,7 +256,7 @@ export function Settings() {
     totalMarketingBudget: 50000
   });
 
-  const [outlets, setOutlets] = useState<any[]>([]);
+  const [outlets, setOutlets] = useState<OutletRecord[]>([]);
   const [newOutlet, setNewOutlet] = useState({ name: '', baseSales: '' });
   const [checklistTemplates, setChecklistTemplates] = useState<any[]>([]);
   const [loadingTemplates, setLoadingTemplates] = useState(true);
@@ -260,16 +299,37 @@ export function Settings() {
       }
     };
 
-    // Fetch Outlets
-    const unsubscribeOutlets = onSnapshot(collection(db, 'outlets'), (snapshot) => {
-      const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setOutlets(list);
-    }, (err) => {
-      console.error("Error fetching outlets:", err);
-    });
+    const fetchOutlets = async () => {
+      const { data, error } = await supabase
+        .from('outlets')
+        .select('id, name, base_sales, is_active, display_order')
+        .order('display_order', { ascending: true })
+        .order('name', { ascending: true });
+
+      if (error) {
+        console.error('Error fetching outlets:', error);
+        return;
+      }
+
+      setOutlets((data || []).flatMap((outlet) => {
+        const normalizedOutlet = normalizeOutletRecord(outlet);
+        return normalizedOutlet ? [normalizedOutlet] : [];
+      }));
+    };
+
+    const outletsChannel = supabase
+      .channel('settings-outlets')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'outlets' }, () => {
+        void fetchOutlets();
+      })
+      .subscribe();
 
     fetchGlobals();
-    return () => unsubscribeOutlets();
+    void fetchOutlets();
+
+    return () => {
+      void supabase.removeChannel(outletsChannel);
+    };
   }, [user]);
 
   useEffect(() => {
@@ -301,21 +361,41 @@ export function Settings() {
     }
 
     setLoadingUsers(true);
-    const unsubscribe = onSnapshot(collection(db, 'users'), (snapshot) => {
-      const normalizedUsers = snapshot.docs
-        .map((userDoc) => normalizeManagedUserRecord(userDoc.id, userDoc.data()))
+
+    const fetchManagedUsers = async () => {
+      const { data, error } = await supabase
+        .from('users')
+        .select('id, auth_user_id, email, display_name, role, outlet_id, outlet_name, status, photo_url')
+        .order('email', { ascending: true });
+
+      if (error) {
+        console.error('Error fetching users:', error);
+        setUserFeedback({ tone: 'error', message: 'Failed to load users.' });
+        setLoadingUsers(false);
+        return;
+      }
+
+      const normalizedUsers = (data || [])
+        .map((userRecord) => normalizeManagedUserRecord(userRecord.id, userRecord))
         .filter((managedUser): managedUser is ManagedUserRecord => managedUser !== null)
         .sort((left, right) => left.email.localeCompare(right.email));
 
       setManagedUsers(normalizedUsers);
       setLoadingUsers(false);
-    }, (error) => {
-      console.error('Error fetching users:', error);
-      setUserFeedback({ tone: 'error', message: 'Failed to load users.' });
-      setLoadingUsers(false);
-    });
+    };
 
-    return () => unsubscribe();
+    const usersChannel = supabase
+      .channel('settings-users')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, () => {
+        void fetchManagedUsers();
+      })
+      .subscribe();
+
+    void fetchManagedUsers();
+
+    return () => {
+      void supabase.removeChannel(usersChannel);
+    };
   }, [user, canManageUsers]);
 
   useEffect(() => {
@@ -382,14 +462,33 @@ export function Settings() {
   const handleAddOutlet = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canManageSettings || !newOutlet.name) return;
+
+    const outletName = newOutlet.name.trim();
+    if (!outletName) return;
+
     try {
-      await addDoc(collection(db, 'outlets'), {
-        name: newOutlet.name,
-        baseSales: Number(newOutlet.baseSales) || 0,
-        isActive: true,
-        order: outlets.length + 1,
-        createdAt: serverTimestamp()
-      });
+      const { data, error } = await supabase
+        .from('outlets')
+        .insert({
+          name: outletName,
+          base_sales: Number(newOutlet.baseSales) || 0,
+          is_active: true,
+          display_order: outlets.length + 1,
+          created_at: nowIso(),
+          updated_at: nowIso()
+        })
+        .select('id, name, base_sales, is_active, display_order')
+        .single();
+
+      if (error) {
+        throw error;
+      }
+
+      const normalizedOutlet = normalizeOutletRecord(data);
+      if (normalizedOutlet) {
+        setOutlets((current) => [...current, normalizedOutlet].sort((left, right) => left.order - right.order || left.name.localeCompare(right.name)));
+      }
+
       setNewOutlet({ name: '', baseSales: '' });
     } catch (error) {
       console.error('Error adding outlet:', error);
@@ -400,7 +499,16 @@ export function Settings() {
     if (!canManageSettings) return;
     if (!window.confirm('Are you sure you want to delete this outlet?')) return;
     try {
-      await deleteDoc(doc(db, 'outlets', id));
+      const { error } = await supabase
+        .from('outlets')
+        .delete()
+        .eq('id', id);
+
+      if (error) {
+        throw error;
+      }
+
+      setOutlets((current) => current.filter((outlet) => outlet.id !== id));
     } catch (error) {
       console.error('Error deleting outlet:', error);
     }
@@ -443,7 +551,6 @@ export function Settings() {
     const outletName = userForm.role === 'supervisor' && selectedOutlet && typeof selectedOutlet.name === 'string'
       ? selectedOutlet.name.trim()
       : '';
-    const userDocId = editingUserId || email;
     const existingManagedUser = editingUserId
       ? managedUsers.find((managedUser) => managedUser.id === editingUserId) || null
       : null;
@@ -467,33 +574,61 @@ export function Settings() {
     setUserFeedback(null);
     try {
       const payload = {
-        auth_uid: existingManagedUser?.auth_uid || '',
+        auth_user_id: toNullableUuid(existingManagedUser?.auth_uid || ''),
         email,
         display_name: displayName,
         role: userForm.role,
-        outlet_id: outletId,
+        outlet_id: toNullableUuid(outletId),
         outlet_name: outletName,
-        outlet: outletName,
         status: userForm.status,
         photo_url: existingManagedUser?.photo_url || '',
-        updatedAt: serverTimestamp()
+        updated_at: nowIso()
       };
 
       if (editingUserId) {
-        await updateDoc(doc(db, 'users', userDocId), payload);
+        const { data, error } = await supabase
+          .from('users')
+          .update(payload)
+          .eq('id', editingUserId)
+          .select('id, auth_user_id, email, display_name, role, outlet_id, outlet_name, status, photo_url')
+          .single();
+
+        if (error) {
+          throw error;
+        }
+
+        const normalizedUser = normalizeManagedUserRecord(data.id, data);
+        if (normalizedUser) {
+          setManagedUsers((current) => current
+            .map((managedUser) => managedUser.id === normalizedUser.id ? normalizedUser : managedUser)
+            .sort((left, right) => left.email.localeCompare(right.email)));
+        }
       } else {
         const duplicateUser = managedUsers.find(
-          (managedUser) => managedUser.id === userDocId || managedUser.email.toLowerCase() === email
+          (managedUser) => managedUser.email.toLowerCase() === email
         );
 
         if (duplicateUser) {
           throw new Error('A user profile for this email already exists.');
         }
 
-        await setDoc(doc(db, 'users', userDocId), {
-          ...payload,
-          createdAt: serverTimestamp()
-        });
+        const { data, error } = await supabase
+          .from('users')
+          .insert({
+            ...payload,
+            created_at: nowIso()
+          })
+          .select('id, auth_user_id, email, display_name, role, outlet_id, outlet_name, status, photo_url')
+          .single();
+
+        if (error) {
+          throw error;
+        }
+
+        const normalizedUser = normalizeManagedUserRecord(data.id, data);
+        if (normalizedUser) {
+          setManagedUsers((current) => [...current, normalizedUser].sort((left, right) => left.email.localeCompare(right.email)));
+        }
       }
 
       setUserFeedback({
@@ -518,7 +653,7 @@ export function Settings() {
     if (!canManageUsers || !deletingUser) return;
 
     const currentUserEmail = user?.email?.trim().toLowerCase() || '';
-    if (deletingUser.id === user?.uid || (currentUserEmail && deletingUser.email.toLowerCase() === currentUserEmail)) {
+    if (deletingUser.id === user?.uid || deletingUser.auth_uid === user?.uid || (currentUserEmail && deletingUser.email.toLowerCase() === currentUserEmail)) {
       setUserFeedback({ tone: 'error', message: 'You cannot delete your own profile.' });
       setDeletingUser(null);
       return;
@@ -527,7 +662,16 @@ export function Settings() {
     setDeletingManagedUser(true);
     setUserFeedback(null);
     try {
-      await deleteDoc(doc(db, 'users', deletingUser.id));
+      const { error } = await supabase
+        .from('users')
+        .delete()
+        .eq('id', deletingUser.id);
+
+      if (error) {
+        throw error;
+      }
+
+      setManagedUsers((current) => current.filter((managedUser) => managedUser.id !== deletingUser.id));
       if (editingUserId === deletingUser.id) {
         resetUserForm();
       }

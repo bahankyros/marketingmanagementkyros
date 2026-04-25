@@ -5,6 +5,7 @@ import { supabase } from './supabase';
 type UserRole = 'admin' | 'supervisor' | 'finance';
 type UserStatus = 'active' | 'invited' | 'suspended';
 type AccessState = UserStatus | 'not_provisioned';
+const ACCOUNT_NOT_PROVISIONED_MESSAGE = 'Account not provisioned. Please contact an admin.';
 
 export type AuthUser = SupabaseUser & {
   uid: string;
@@ -13,6 +14,7 @@ export type AuthUser = SupabaseUser & {
 };
 
 interface UserData {
+  id: string;
   auth_uid: string;
   email: string;
   display_name: string;
@@ -23,6 +25,18 @@ interface UserData {
   photo_url: string;
   outlet?: string;
 }
+
+type UserProfileRow = {
+  id: string;
+  auth_user_id: string | null;
+  email: string;
+  display_name: string | null;
+  role: string;
+  outlet_id: string | null;
+  outlet_name: string | null;
+  status: string | null;
+  photo_url: string | null;
+};
 
 interface AuthContextType {
   user: AuthUser | null;
@@ -94,27 +108,84 @@ function toAuthUser(currentUser: SupabaseUser): AuthUser {
   };
 }
 
-function buildUserData(currentUser: AuthUser): UserData | null {
-  const metadataRole = currentUser.app_metadata?.role ?? currentUser.user_metadata?.role;
-  if (!isUserRole(metadataRole)) {
+function normalizeUserData(currentUser: AuthUser, profile: UserProfileRow): UserData | null {
+  if (!isUserRole(profile.role)) {
     return null;
   }
 
-  const metadataStatus = currentUser.app_metadata?.status ?? currentUser.user_metadata?.status;
-  const outletId = getMetadataString(currentUser.user_metadata?.outlet_id, currentUser.user_metadata?.outlet);
-  const outletName = getMetadataString(currentUser.user_metadata?.outlet_name, currentUser.user_metadata?.outlet);
+  const outletId = getMetadataString(profile.outlet_id);
+  const outletName = getMetadataString(profile.outlet_name);
 
   return {
-    auth_uid: currentUser.id,
-    email: currentUser.email || '',
-    display_name: currentUser.displayName || currentUser.email || '',
-    role: metadataRole,
+    id: profile.id,
+    auth_uid: profile.auth_user_id || currentUser.id,
+    email: profile.email || currentUser.email || '',
+    display_name: profile.display_name || currentUser.displayName || currentUser.email || '',
+    role: profile.role,
     outlet_id: outletId,
     outlet_name: outletName,
-    status: isUserStatus(metadataStatus) ? metadataStatus : 'active',
-    photo_url: currentUser.photoURL || '',
+    status: isUserStatus(profile.status) ? profile.status : 'active',
+    photo_url: profile.photo_url || currentUser.photoURL || '',
     outlet: outletName,
   };
+}
+
+async function fetchUserProfile(currentUser: SupabaseUser): Promise<UserProfileRow | null> {
+  const profileColumns = 'id, auth_user_id, email, display_name, role, outlet_id, outlet_name, status, photo_url';
+  const { data: authProfile, error: authProfileError } = await supabase
+    .from('users')
+    .select(profileColumns)
+    .eq('auth_user_id', currentUser.id)
+    .maybeSingle();
+
+  if (authProfileError) {
+    throw authProfileError;
+  }
+
+  if (authProfile) {
+    return authProfile as UserProfileRow;
+  }
+
+  const emailKey = normalizeEmailKey(currentUser.email);
+  if (!emailKey) {
+    return null;
+  }
+
+  const { data: emailProfile, error: emailProfileError } = await supabase
+    .from('users')
+    .select(profileColumns)
+    .eq('email', emailKey)
+    .maybeSingle();
+
+  if (emailProfileError) {
+    throw emailProfileError;
+  }
+
+  if (!emailProfile) {
+    return null;
+  }
+
+  const provisionalProfile = emailProfile as UserProfileRow;
+  if (!provisionalProfile.auth_user_id) {
+    const { data: claimedProfile, error: claimError } = await supabase
+      .from('users')
+      .update({
+        auth_user_id: currentUser.id,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', provisionalProfile.id)
+      .select(profileColumns)
+      .single();
+
+    if (claimError) {
+      console.error('Error claiming Supabase user profile:', claimError);
+      return provisionalProfile;
+    }
+
+    return claimedProfile as UserProfileRow;
+  }
+
+  return provisionalProfile;
 }
 
 function toAuthError(error: any) {
@@ -141,7 +212,11 @@ function toAuthError(error: any) {
   return authError;
 }
 
-function getAccessNotice(accessState: UserStatus | null) {
+function getAccessNotice(accessState: AccessState | null) {
+  if (accessState === 'not_provisioned') {
+    return ACCOUNT_NOT_PROVISIONED_MESSAGE;
+  }
+
   if (accessState === 'invited') {
     return 'Your account is pending activation. Contact an admin if this should already be live.';
   }
@@ -162,11 +237,17 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
   useEffect(() => {
     let isMounted = true;
+    let requestToken = 0;
 
-    const applySessionUser = (sessionUser: SupabaseUser | null | undefined) => {
+    const applySessionUser = async (sessionUser: SupabaseUser | null | undefined) => {
+      const activeRequest = requestToken + 1;
+      requestToken = activeRequest;
+
       if (!isMounted) {
         return;
       }
+
+      setLoading(true);
 
       if (!sessionUser) {
         setUser(null);
@@ -178,8 +259,20 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       }
 
       const nextUser = toAuthUser(sessionUser);
-      const nextUserData = buildUserData(nextUser);
-      const nextAccessState = nextUserData?.status ?? 'active';
+      let nextUserData: UserData | null = null;
+      let nextAccessState: AccessState = 'not_provisioned';
+
+      try {
+        const profile = await fetchUserProfile(sessionUser);
+        nextUserData = profile ? normalizeUserData(nextUser, profile) : null;
+        nextAccessState = nextUserData?.status ?? 'not_provisioned';
+      } catch (error) {
+        console.error('Error loading Supabase user profile:', error);
+      }
+
+      if (!isMounted || activeRequest !== requestToken) {
+        return;
+      }
 
       setUser(nextUser);
       setUserData(nextUserData);
@@ -194,17 +287,17 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         if (error) {
           console.error('Error loading Supabase session:', error);
         }
-        applySessionUser(data.session?.user);
+        void applySessionUser(data.session?.user);
       })
       .catch((error) => {
         console.error('Error loading Supabase session:', error);
-        applySessionUser(null);
+        void applySessionUser(null);
       });
 
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
-      applySessionUser(session?.user);
+      void applySessionUser(session?.user);
     });
 
     return () => {
