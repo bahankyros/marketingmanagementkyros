@@ -11,20 +11,8 @@ import {
   Smile,
   X
 } from 'lucide-react';
-import {
-  Timestamp,
-  addDoc,
-  collection,
-  doc,
-  onSnapshot,
-  orderBy,
-  query,
-  serverTimestamp,
-  updateDoc,
-  where
-} from 'firebase/firestore';
-import { db } from '../lib/firebase';
 import { useAuth } from '../lib/AuthContext';
+import { supabase } from '../lib/supabase';
 
 type MascotBookingStatus = 'pending' | 'approved' | 'rejected' | 'cancelled';
 
@@ -35,13 +23,13 @@ type MascotBookingRecord = {
   title: string;
   location: string;
   requestNote: string;
-  startAt: Timestamp | null;
-  endAt: Timestamp | null;
+  startAt: Date | null;
+  endAt: Date | null;
   status: MascotBookingStatus;
   adminNote: string;
   approvedByUid: string;
-  createdAt: Timestamp | null;
-  updatedAt: Timestamp | null;
+  createdAt: Date | null;
+  updatedAt: Date | null;
 };
 
 type MascotLogRecord = {
@@ -51,7 +39,7 @@ type MascotLogRecord = {
   status: string;
   condition: string;
   actualUsageNotes: string;
-  createdAt: Timestamp | null;
+  createdAt: Date | null;
 };
 
 type OutletOption = {
@@ -73,19 +61,31 @@ type FeedbackState = {
   message: string;
 } | null;
 
-function toDateTimeLocal(value: Date | Timestamp | string | null | undefined) {
+function toDateTimeLocal(value: Date | string | null | undefined) {
   if (!value) return '';
 
-  const date = value instanceof Timestamp
-    ? value.toDate()
-    : value instanceof Date
-      ? value
-      : new Date(value);
+  const date = value instanceof Date
+    ? value
+    : new Date(value);
 
   if (Number.isNaN(date.getTime())) return '';
 
   const offset = date.getTimezoneOffset();
   return new Date(date.getTime() - offset * 60000).toISOString().slice(0, 16);
+}
+
+function normalizeDate(value: unknown) {
+  if (!value) return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+  return null;
+}
+
+function nowIso() {
+  return new Date().toISOString();
 }
 
 function buildDefaultBookingForm(outletId = ''): BookingFormState {
@@ -116,6 +116,36 @@ function bookingStatusTone(status: MascotBookingStatus) {
     default:
       return 'bg-amber-100 text-amber-700';
   }
+}
+
+function normalizeBooking(row: any): MascotBookingRecord {
+  return {
+    id: typeof row.id === 'string' ? row.id : '',
+    outlet_id: typeof row.outlet_id === 'string' ? row.outlet_id : '',
+    requestedByUid: typeof row.requested_by_user_id === 'string' ? row.requested_by_user_id : '',
+    title: typeof row.title === 'string' ? row.title : '',
+    location: typeof row.location === 'string' ? row.location : '',
+    requestNote: typeof row.request_note === 'string' ? row.request_note : '',
+    startAt: normalizeDate(row.start_at),
+    endAt: normalizeDate(row.end_at),
+    status: (row.status as MascotBookingStatus) || 'pending',
+    adminNote: typeof row.admin_note === 'string' ? row.admin_note : '',
+    approvedByUid: typeof row.approved_by_user_id === 'string' ? row.approved_by_user_id : '',
+    createdAt: normalizeDate(row.created_at),
+    updatedAt: normalizeDate(row.updated_at)
+  };
+}
+
+function normalizeLog(row: any): MascotLogRecord {
+  return {
+    id: typeof row.id === 'string' ? row.id : '',
+    date: typeof row.date === 'string' ? row.date : '',
+    outletEvent: typeof row.outlet_event === 'string' ? row.outlet_event : '',
+    status: typeof row.status === 'string' ? row.status : 'Available',
+    condition: typeof row.condition === 'string' ? row.condition : 'Good',
+    actualUsageNotes: typeof row.actual_usage_notes === 'string' ? row.actual_usage_notes : '',
+    createdAt: normalizeDate(row.created_at)
+  };
 }
 
 export function Mascots() {
@@ -160,46 +190,56 @@ export function Mascots() {
       return;
     }
 
-    setLoadingBookings(true);
-    const bookingsQuery = isAdmin
-      ? query(collection(db, 'mascot_bookings'), orderBy('startAt', 'asc'))
-      : query(collection(db, 'mascot_bookings'), where('outlet_id', '==', userData?.outlet_id || ''));
+    let isMounted = true;
 
-    const unsubscribe = onSnapshot(bookingsQuery, (snapshot) => {
-      const normalized = snapshot.docs
-        .map((bookingDoc) => {
-          const bookingData = bookingDoc.data();
-          return {
-            id: bookingDoc.id,
-            outlet_id: typeof bookingData.outlet_id === 'string' ? bookingData.outlet_id : '',
-            requestedByUid: typeof bookingData.requestedByUid === 'string' ? bookingData.requestedByUid : '',
-            title: typeof bookingData.title === 'string' ? bookingData.title : '',
-            location: typeof bookingData.location === 'string' ? bookingData.location : '',
-            requestNote: typeof bookingData.requestNote === 'string' ? bookingData.requestNote : '',
-            startAt: bookingData.startAt instanceof Timestamp ? bookingData.startAt : null,
-            endAt: bookingData.endAt instanceof Timestamp ? bookingData.endAt : null,
-            status: bookingData.status as MascotBookingStatus,
-            adminNote: typeof bookingData.adminNote === 'string' ? bookingData.adminNote : '',
-            approvedByUid: typeof bookingData.approvedByUid === 'string' ? bookingData.approvedByUid : '',
-            createdAt: bookingData.createdAt instanceof Timestamp ? bookingData.createdAt : null,
-            updatedAt: bookingData.updatedAt instanceof Timestamp ? bookingData.updatedAt : null
-          } satisfies MascotBookingRecord;
-        })
+    const loadBookings = async () => {
+      setLoadingBookings(true);
+
+      let request = supabase
+        .from('mascot_bookings')
+        .select('*')
+        .order('start_at', { ascending: true });
+
+      if (!isAdmin) {
+        request = request.eq('outlet_id', userData?.outlet_id || '');
+      }
+
+      const { data, error } = await request;
+
+      if (!isMounted) return;
+
+      if (error) {
+        console.error('Error loading mascot booking requests:', error);
+        setFeedback({ tone: 'error', message: 'Failed to load booking requests.' });
+        setLoadingBookings(false);
+        return;
+      }
+
+      const normalized = (data || [])
+        .map(normalizeBooking)
         .sort((left, right) => {
-          const leftTime = left.startAt?.toMillis() || 0;
-          const rightTime = right.startAt?.toMillis() || 0;
+          const leftTime = left.startAt?.getTime() || 0;
+          const rightTime = right.startAt?.getTime() || 0;
           return leftTime - rightTime;
         });
 
       setBookingRequests(normalized);
       setLoadingBookings(false);
-    }, (error) => {
-      console.error('Error loading mascot booking requests:', error);
-      setFeedback({ tone: 'error', message: 'Failed to load booking requests.' });
-      setLoadingBookings(false);
-    });
+    };
 
-    return () => unsubscribe();
+    void loadBookings();
+
+    const channel = supabase
+      .channel('core-ops-mascot-bookings')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'mascot_bookings' }, () => {
+        void loadBookings();
+      })
+      .subscribe();
+
+    return () => {
+      isMounted = false;
+      void supabase.removeChannel(channel);
+    };
   }, [user, userData?.outlet_id, canRequestMascot, isAdmin, isSupervisor]);
 
   useEffect(() => {
@@ -209,29 +249,41 @@ export function Mascots() {
       return;
     }
 
-    const logsQuery = query(collection(db, 'mascot_logs'), orderBy('createdAt', 'desc'));
-    const unsubscribe = onSnapshot(logsQuery, (snapshot) => {
-      const normalizedLogs = snapshot.docs.map((logDoc) => {
-        const logData = logDoc.data();
-        return {
-          id: logDoc.id,
-          date: typeof logData.date === 'string' ? logData.date : '',
-          outletEvent: typeof logData.outletEvent === 'string' ? logData.outletEvent : '',
-          status: typeof logData.status === 'string' ? logData.status : 'Available',
-          condition: typeof logData.condition === 'string' ? logData.condition : 'Good',
-          actualUsageNotes: typeof logData.actualUsageNotes === 'string' ? logData.actualUsageNotes : '',
-          createdAt: logData.createdAt instanceof Timestamp ? logData.createdAt : null
-        } satisfies MascotLogRecord;
-      });
+    let isMounted = true;
 
-      setLogs(normalizedLogs);
-      setLoadingLogs(false);
-    }, (error) => {
-      console.error('Error loading mascot logs:', error);
-      setLoadingLogs(false);
-    });
+    const loadLogs = async () => {
+      setLoadingLogs(true);
 
-    return () => unsubscribe();
+      const { data, error } = await supabase
+        .from('mascot_logs')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (!isMounted) return;
+
+      if (error) {
+        console.error('Error loading mascot logs:', error);
+        setLoadingLogs(false);
+        return;
+      }
+
+      setLogs((data || []).map(normalizeLog));
+      setLoadingLogs(false);
+    };
+
+    void loadLogs();
+
+    const channel = supabase
+      .channel('core-ops-mascot-logs')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'mascot_logs' }, () => {
+        void loadLogs();
+      })
+      .subscribe();
+
+    return () => {
+      isMounted = false;
+      void supabase.removeChannel(channel);
+    };
   }, [user]);
 
   useEffect(() => {
@@ -240,18 +292,42 @@ export function Mascots() {
       return;
     }
 
-    const unsubscribe = onSnapshot(query(collection(db, 'outlets'), orderBy('name', 'asc')), (snapshot) => {
-      setOutlets(snapshot.docs
-        .map((outletDoc) => {
-          const outletData = outletDoc.data();
-          return typeof outletData.name === 'string' && outletData.name.trim()
-            ? { id: outletDoc.id, name: outletData.name.trim() }
-            : null;
-        })
-        .filter((outlet): outlet is OutletOption => outlet !== null));
-    });
+    let isMounted = true;
 
-    return () => unsubscribe();
+    const loadOutlets = async () => {
+      const { data, error } = await supabase
+        .from('outlets')
+        .select('id, name')
+        .order('name', { ascending: true });
+
+      if (!isMounted) return;
+
+      if (error) {
+        console.error('Error loading mascot outlets:', error);
+        setOutlets([]);
+        return;
+      }
+
+      setOutlets((data || [])
+        .map((outlet) => typeof outlet.name === 'string' && outlet.name.trim()
+          ? { id: outlet.id, name: outlet.name.trim() }
+          : null)
+        .filter((outlet): outlet is OutletOption => outlet !== null));
+    };
+
+    void loadOutlets();
+
+    const channel = supabase
+      .channel('core-ops-mascot-outlets')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'outlets' }, () => {
+        void loadOutlets();
+      })
+      .subscribe();
+
+    return () => {
+      isMounted = false;
+      void supabase.removeChannel(channel);
+    };
   }, [user, isAdmin]);
 
   useEffect(() => {
@@ -274,12 +350,12 @@ export function Mascots() {
   const activeApprovedBooking = bookingRequests.find((booking) => {
     if (booking.status !== 'approved' || !booking.startAt || !booking.endAt) return false;
     const now = Date.now();
-    return booking.startAt.toMillis() <= now && booking.endAt.toMillis() >= now;
+    return booking.startAt.getTime() <= now && booking.endAt.getTime() >= now;
   });
   const currentLocation = activeApprovedBooking?.location || latestLog?.outletEvent || 'HQ Storage';
   const upcomingBookingRequests = bookingRequests.filter((booking) => {
     if (!booking.startAt) return true;
-    return booking.startAt.toDate().getTime() >= Date.now() - 24 * 60 * 60 * 1000;
+    return booking.startAt.getTime() >= Date.now() - 24 * 60 * 60 * 1000;
   });
 
   const resolveOutletLabel = (outletId: string) => {
@@ -292,7 +368,7 @@ export function Mascots() {
 
   const handleBookMascot = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!user || !canRequestMascot) return;
+    if (!userData?.id || !canRequestMascot) return;
 
     const outletId = isSupervisor ? (userData?.outlet_id || '') : bookingForm.outlet_id;
     const startAt = new Date(bookingForm.startAt);
@@ -317,20 +393,22 @@ export function Mascots() {
     setFeedback(null);
 
     try {
-      await addDoc(collection(db, 'mascot_bookings'), {
+      const { error } = await supabase.from('mascot_bookings').insert({
         outlet_id: outletId,
-        requestedByUid: user.uid,
+        requested_by_user_id: userData.id,
         title: bookingForm.title.trim(),
         location: bookingForm.location.trim(),
-        requestNote: bookingForm.requestNote.trim(),
-        startAt: Timestamp.fromDate(startAt),
-        endAt: Timestamp.fromDate(endAt),
+        request_note: bookingForm.requestNote.trim(),
+        start_at: startAt.toISOString(),
+        end_at: endAt.toISOString(),
         status: 'pending',
-        adminNote: '',
-        approvedByUid: '',
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
+        admin_note: '',
+        approved_by_user_id: null,
+        created_at: nowIso(),
+        updated_at: nowIso()
       });
+
+      if (error) throw error;
 
       setView('default');
       setActiveTab('requests');
@@ -352,30 +430,23 @@ export function Mascots() {
   };
 
   const handleAdminDecisionSave = async () => {
-    if (!user || !isAdmin || !selectedBooking || !selectedBooking.startAt || !selectedBooking.endAt) return;
-    if (!selectedBooking.createdAt) {
-      setFeedback({ tone: 'error', message: 'This request is missing a valid created timestamp.' });
-      return;
-    }
+    if (!userData?.id || !isAdmin || !selectedBooking) return;
 
     setSubmitting(true);
     setFeedback(null);
 
     try {
-      await updateDoc(doc(db, 'mascot_bookings', selectedBooking.id), {
-        outlet_id: selectedBooking.outlet_id,
-        requestedByUid: selectedBooking.requestedByUid,
-        title: selectedBooking.title,
-        location: selectedBooking.location,
-        requestNote: selectedBooking.requestNote,
-        startAt: selectedBooking.startAt,
-        endAt: selectedBooking.endAt,
-        status: adminDecisionStatus,
-        adminNote: adminNoteDraft.trim(),
-        approvedByUid: adminDecisionStatus === 'pending' ? '' : user.uid,
-        createdAt: selectedBooking.createdAt,
-        updatedAt: serverTimestamp()
-      });
+      const { error } = await supabase
+        .from('mascot_bookings')
+        .update({
+          status: adminDecisionStatus,
+          admin_note: adminNoteDraft.trim(),
+          approved_by_user_id: adminDecisionStatus === 'pending' ? null : userData.id,
+          updated_at: nowIso()
+        })
+        .eq('id', selectedBooking.id);
+
+      if (error) throw error;
 
       setSelectedBooking(null);
       setFeedback({
@@ -392,15 +463,22 @@ export function Mascots() {
 
   const handleLogCondition = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!user || !canLogCondition) return;
+    if (!userData?.id || !canLogCondition) return;
 
     try {
-      await addDoc(collection(db, 'mascot_logs'), {
-        ...conditionForm,
-        assignedPicId: user.uid,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
+      const { error } = await supabase.from('mascot_logs').insert({
+        date: conditionForm.date || null,
+        outlet_event: conditionForm.outletEvent.trim(),
+        status: conditionForm.status,
+        condition: conditionForm.condition,
+        actual_usage_notes: conditionForm.actualUsageNotes.trim(),
+        assigned_pic_user_id: userData.id,
+        created_at: nowIso(),
+        updated_at: nowIso()
       });
+
+      if (error) throw error;
+
       setView('default');
       setActiveTab('logs');
       setConditionForm({ date: '', outletEvent: '', status: 'Available', condition: 'Good', actualUsageNotes: '' });
@@ -497,7 +575,7 @@ export function Mascots() {
             </div>
             <div>
               <p className="text-xs text-neutral-500 uppercase font-semibold mb-1 flex items-center gap-1.5"><PenTool className="w-3.5 h-3.5" /> Updated</p>
-              <p className="font-semibold text-neutral-900 text-lg">{latestLog ? (latestLog.createdAt?.toDate().toLocaleDateString() || 'Today') : 'N/A'}</p>
+              <p className="font-semibold text-neutral-900 text-lg">{latestLog ? (latestLog.createdAt?.toLocaleDateString() || 'Today') : 'N/A'}</p>
             </div>
           </div>
         </div>
@@ -555,12 +633,12 @@ export function Mascots() {
                       >
                         <td className="px-6 py-4">
                           <p className="font-semibold text-neutral-900">
-                            {booking.startAt ? booking.startAt.toDate().toLocaleDateString() : 'No date'}
+                            {booking.startAt ? booking.startAt.toLocaleDateString() : 'No date'}
                           </p>
                           <p className="text-xs text-neutral-500 mt-0.5">
-                            {booking.startAt ? booking.startAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--'}
+                            {booking.startAt ? booking.startAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--'}
                             {' - '}
-                            {booking.endAt ? booking.endAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--'}
+                            {booking.endAt ? booking.endAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--'}
                           </p>
                         </td>
                         <td className="px-6 py-4 font-medium text-neutral-900">{resolveOutletLabel(booking.outlet_id)}</td>
@@ -664,9 +742,9 @@ export function Mascots() {
                 <div className="rounded-2xl border border-neutral-100 bg-neutral-50 p-4">
                   <p className="text-sm font-medium text-neutral-900">Schedule</p>
                   <p className="mt-2 text-sm text-neutral-500">
-                    {selectedBooking.startAt ? selectedBooking.startAt.toDate().toLocaleString() : 'No start time'}
+                    {selectedBooking.startAt ? selectedBooking.startAt.toLocaleString() : 'No start time'}
                     {' - '}
-                    {selectedBooking.endAt ? selectedBooking.endAt.toDate().toLocaleString() : 'No end time'}
+                    {selectedBooking.endAt ? selectedBooking.endAt.toLocaleString() : 'No end time'}
                   </p>
                 </div>
 

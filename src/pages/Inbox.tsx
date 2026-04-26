@@ -8,10 +8,9 @@ import {
   Clock3,
   Smile
 } from 'lucide-react';
-import { collection, onSnapshot, query, Timestamp, where } from 'firebase/firestore';
 import { useNavigate } from 'react-router';
-import { db } from '../lib/firebase';
 import { useAuth } from '../lib/AuthContext';
+import { supabase } from '../lib/supabase';
 
 type TaskInboxStatus = 'assigned' | 'in_progress' | 'proof_submitted' | 'approved' | 'rejected' | 'completed';
 type MascotInboxStatus = 'pending' | 'approved' | 'rejected' | 'cancelled';
@@ -20,8 +19,8 @@ type TaskInboxRecord = {
   id: string;
   title: string;
   status: TaskInboxStatus;
-  dueAt: Timestamp | null;
-  updatedAt: Timestamp | null;
+  dueAt: Date | null;
+  updatedAt: Date | null;
   assignedToUid: string;
 };
 
@@ -31,8 +30,8 @@ type MascotInboxRecord = {
   location: string;
   status: MascotInboxStatus;
   outlet_id: string;
-  updatedAt: Timestamp | null;
-  startAt: Timestamp | null;
+  updatedAt: Date | null;
+  startAt: Date | null;
 };
 
 type InboxItem = {
@@ -42,7 +41,7 @@ type InboxItem = {
   title: string;
   body: string;
   status: string;
-  updatedAt: Timestamp | null;
+  updatedAt: Date | null;
   href: '/tasks' | '/mascots';
 };
 
@@ -66,9 +65,42 @@ function inboxStatusTone(status: string) {
   }
 }
 
-function formatTimestamp(value: Timestamp | null) {
+function normalizeDate(value: unknown) {
+  if (!value) return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+  return null;
+}
+
+function formatTimestamp(value: Date | null) {
   if (!value) return 'No time';
-  return value.toDate().toLocaleString();
+  return value.toLocaleString();
+}
+
+function normalizeTaskInbox(row: any): TaskInboxRecord {
+  return {
+    id: typeof row.id === 'string' ? row.id : '',
+    title: typeof row.title === 'string' ? row.title : '',
+    status: (row.status as TaskInboxStatus) || 'assigned',
+    dueAt: normalizeDate(row.due_at),
+    updatedAt: normalizeDate(row.updated_at),
+    assignedToUid: typeof row.assigned_to_user_id === 'string' ? row.assigned_to_user_id : ''
+  };
+}
+
+function normalizeMascotInbox(row: any): MascotInboxRecord {
+  return {
+    id: typeof row.id === 'string' ? row.id : '',
+    title: typeof row.title === 'string' ? row.title : '',
+    location: typeof row.location === 'string' ? row.location : '',
+    status: (row.status as MascotInboxStatus) || 'pending',
+    outlet_id: typeof row.outlet_id === 'string' ? row.outlet_id : '',
+    updatedAt: normalizeDate(row.updated_at),
+    startAt: normalizeDate(row.start_at)
+  };
 }
 
 export function Inbox() {
@@ -109,36 +141,61 @@ export function Inbox() {
       return;
     }
 
-    setLoadingTasks(true);
-    const tasksQuery = isAdmin
-      ? query(collection(db, 'tasks'), where('status', '==', 'proof_submitted'))
-      : query(collection(db, 'tasks'), where('assignedToUid', '==', user.uid));
+    if (!isAdmin && !userData?.id) {
+      setTaskItems([]);
+      setLoadingTasks(false);
+      return;
+    }
 
-    const unsubscribe = onSnapshot(tasksQuery, (snapshot) => {
-      const normalized = snapshot.docs
-        .map((taskDoc) => {
-          const taskData = taskDoc.data();
-          return {
-            id: taskDoc.id,
-            title: typeof taskData.title === 'string' ? taskData.title : '',
-            status: taskData.status as TaskInboxStatus,
-            dueAt: taskData.dueAt instanceof Timestamp ? taskData.dueAt : null,
-            updatedAt: taskData.updatedAt instanceof Timestamp ? taskData.updatedAt : null,
-            assignedToUid: typeof taskData.assignedToUid === 'string' ? taskData.assignedToUid : ''
-          } satisfies TaskInboxRecord;
-        })
-        .sort((left, right) => (right.updatedAt?.toMillis() || 0) - (left.updatedAt?.toMillis() || 0));
+    let isMounted = true;
+
+    const loadTasks = async () => {
+      setLoadingTasks(true);
+
+      let request = supabase
+        .from('tasks')
+        .select('id, title, status, due_at, updated_at, assigned_to_user_id')
+        .order('updated_at', { ascending: false });
+
+      if (isAdmin) {
+        request = request.eq('status', 'proof_submitted');
+      } else {
+        request = request.eq('assigned_to_user_id', userData.id);
+      }
+
+      const { data, error } = await request;
+
+      if (!isMounted) return;
+
+      if (error) {
+        console.error('Error loading inbox tasks:', error);
+        setTaskItems([]);
+        setLoadingTasks(false);
+        return;
+      }
+
+      const normalized = (data || [])
+        .map(normalizeTaskInbox)
+        .sort((left, right) => (right.updatedAt?.getTime() || 0) - (left.updatedAt?.getTime() || 0));
 
       setTaskItems(normalized);
       setLoadingTasks(false);
-    }, (error) => {
-      console.error('Error loading inbox tasks:', error);
-      setTaskItems([]);
-      setLoadingTasks(false);
-    });
+    };
 
-    return () => unsubscribe();
-  }, [user, canUseInbox, isAdmin]);
+    void loadTasks();
+
+    const channel = supabase
+      .channel('core-ops-inbox-tasks')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, () => {
+        void loadTasks();
+      })
+      .subscribe();
+
+    return () => {
+      isMounted = false;
+      void supabase.removeChannel(channel);
+    };
+  }, [user, userData?.id, canUseInbox, isAdmin]);
 
   useEffect(() => {
     if (!user || !canUseInbox) {
@@ -153,37 +210,55 @@ export function Inbox() {
       return;
     }
 
-    setLoadingBookings(true);
-    const mascotBookingsQuery = isAdmin
-      ? query(collection(db, 'mascot_bookings'), where('status', '==', 'pending'))
-      : query(collection(db, 'mascot_bookings'), where('outlet_id', '==', userData?.outlet_id || ''));
+    let isMounted = true;
 
-    const unsubscribe = onSnapshot(mascotBookingsQuery, (snapshot) => {
-      const normalized = snapshot.docs
-        .map((bookingDoc) => {
-          const bookingData = bookingDoc.data();
-          return {
-            id: bookingDoc.id,
-            title: typeof bookingData.title === 'string' ? bookingData.title : '',
-            location: typeof bookingData.location === 'string' ? bookingData.location : '',
-            status: bookingData.status as MascotInboxStatus,
-            outlet_id: typeof bookingData.outlet_id === 'string' ? bookingData.outlet_id : '',
-            updatedAt: bookingData.updatedAt instanceof Timestamp ? bookingData.updatedAt : null,
-            startAt: bookingData.startAt instanceof Timestamp ? bookingData.startAt : null
-          } satisfies MascotInboxRecord;
-        })
+    const loadBookings = async () => {
+      setLoadingBookings(true);
+
+      let request = supabase
+        .from('mascot_bookings')
+        .select('id, title, location, status, outlet_id, updated_at, start_at')
+        .order('updated_at', { ascending: false });
+
+      if (isAdmin) {
+        request = request.eq('status', 'pending');
+      } else {
+        request = request.eq('outlet_id', userData?.outlet_id || '');
+      }
+
+      const { data, error } = await request;
+
+      if (!isMounted) return;
+
+      if (error) {
+        console.error('Error loading inbox mascot bookings:', error);
+        setBookingItems([]);
+        setLoadingBookings(false);
+        return;
+      }
+
+      const normalized = (data || [])
+        .map(normalizeMascotInbox)
         .filter((booking) => isAdmin || SUPERVISOR_MASCOT_VISIBLE_STATUSES.includes(booking.status))
-        .sort((left, right) => (right.updatedAt?.toMillis() || 0) - (left.updatedAt?.toMillis() || 0));
+        .sort((left, right) => (right.updatedAt?.getTime() || 0) - (left.updatedAt?.getTime() || 0));
 
       setBookingItems(normalized);
       setLoadingBookings(false);
-    }, (error) => {
-      console.error('Error loading inbox mascot bookings:', error);
-      setBookingItems([]);
-      setLoadingBookings(false);
-    });
+    };
 
-    return () => unsubscribe();
+    void loadBookings();
+
+    const channel = supabase
+      .channel('core-ops-inbox-mascot-bookings')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'mascot_bookings' }, () => {
+        void loadBookings();
+      })
+      .subscribe();
+
+    return () => {
+      isMounted = false;
+      void supabase.removeChannel(channel);
+    };
   }, [user, userData?.outlet_id, canUseInbox, isAdmin, isSupervisor]);
 
   const inboxItems = useMemo(() => {
@@ -214,7 +289,7 @@ export function Inbox() {
     } satisfies InboxItem));
 
     return [...taskInboxItems, ...mascotInboxItems]
-      .sort((left, right) => (right.updatedAt?.toMillis() || 0) - (left.updatedAt?.toMillis() || 0));
+      .sort((left, right) => (right.updatedAt?.getTime() || 0) - (left.updatedAt?.getTime() || 0));
   }, [taskItems, bookingItems, isAdmin]);
 
   const unreadCount = inboxItems.filter((item) => !readIds.includes(item.id)).length;

@@ -14,21 +14,8 @@ import {
   Upload,
   X
 } from 'lucide-react';
-import {
-  Timestamp,
-  addDoc,
-  collection,
-  doc,
-  onSnapshot,
-  orderBy,
-  query,
-  serverTimestamp,
-  updateDoc,
-  where
-} from 'firebase/firestore';
-import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
-import { db, storage } from '../lib/firebase';
 import { useAuth } from '../lib/AuthContext';
+import { supabase } from '../lib/supabase';
 import { useCampaigns } from '../lib/useCampaigns';
 
 type EventDecisionStatus = 'Proposed' | 'Reviewing' | 'Approved' | 'Rejected' | 'Completed';
@@ -52,8 +39,8 @@ type EventRecord = {
   endAt: Date;
   proposedDate: string;
   submitterId: string;
-  createdAt: Timestamp | null;
-  updatedAt: Timestamp | null;
+  createdAt: Date | null;
+  updatedAt: Date | null;
 };
 
 type EventEditorState = {
@@ -85,7 +72,7 @@ type LinkedTaskRecord = {
   outlet_id: string;
   assignedToUid: string;
   status: LinkedTaskStatus;
-  dueAt: Timestamp | null;
+  dueAt: Date | null;
 };
 
 const OUTLET_OPTIONS = ['Mytown', 'Centrepoint', 'Sogo', 'Empire', 'Setia City Mall', 'Eco Grandeur'];
@@ -99,14 +86,12 @@ function formatDateInput(date: Date) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
-function toDateTimeLocal(value: Date | Timestamp | string | null | undefined) {
+function toDateTimeLocal(value: Date | string | null | undefined) {
   if (!value) return '';
 
-  const date = value instanceof Timestamp
-    ? value.toDate()
-    : value instanceof Date
-      ? value
-      : new Date(value);
+  const date = value instanceof Date
+    ? value
+    : new Date(value);
 
   if (Number.isNaN(date.getTime())) return '';
 
@@ -114,11 +99,7 @@ function toDateTimeLocal(value: Date | Timestamp | string | null | undefined) {
   return new Date(date.getTime() - offset * 60000).toISOString().slice(0, 16);
 }
 
-function parseLegacyEventDate(value: unknown) {
-  if (value instanceof Timestamp) {
-    return value.toDate();
-  }
-
+function parseEventDate(value: unknown) {
   if (typeof value === 'string' && value.trim()) {
     const normalized = value.includes('T') ? value : `${value}T10:00`;
     const parsed = new Date(normalized);
@@ -128,6 +109,17 @@ function parseLegacyEventDate(value: unknown) {
   }
 
   return null;
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function toNullableUuid(value: string) {
+  const trimmed = value.trim();
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(trimmed)
+    ? trimmed
+    : null;
 }
 
 function createDefaultEventDate(baseDate?: Date) {
@@ -199,33 +191,45 @@ function startOfMonth(date: Date) {
   return new Date(date.getFullYear(), date.getMonth(), 1);
 }
 
-function normalizeEvent(raw: any, id: string): EventRecord {
-  const fallbackStart = parseLegacyEventDate(raw.startAt) || parseLegacyEventDate(raw.proposedDate) || new Date();
-  const fallbackEnd = parseLegacyEventDate(raw.endAt) || new Date(fallbackStart.getTime() + 2 * 60 * 60 * 1000);
+function normalizeEvent(raw: any): EventRecord {
+  const fallbackStart = parseEventDate(raw.start_at) || parseEventDate(raw.proposed_date) || new Date();
+  const fallbackEnd = parseEventDate(raw.end_at) || new Date(fallbackStart.getTime() + 2 * 60 * 60 * 1000);
 
   return {
-    id,
-    eventName: typeof raw.eventName === 'string' ? raw.eventName : '',
+    id: typeof raw.id === 'string' ? raw.id : '',
+    eventName: typeof raw.event_name === 'string' ? raw.event_name : '',
     organizer: typeof raw.organizer === 'string' ? raw.organizer : '',
-    outlet: typeof raw.outlet === 'string' ? raw.outlet : '',
+    outlet: typeof raw.outlet_name === 'string' ? raw.outlet_name : '',
     type: typeof raw.type === 'string' ? raw.type : 'Internal',
-    campaignId: typeof raw.campaignId === 'string' ? raw.campaignId : '',
-    decisionStatus: (raw.decisionStatus as EventDecisionStatus) || 'Proposed',
-    assignedPic: typeof raw.assignedPic === 'string' ? raw.assignedPic : '',
-    actualAttendance: Number(raw.actualAttendance) || 0,
-    salesGenerated: Number(raw.salesGenerated) || 0,
-    vouchersDistributed: Number(raw.vouchersDistributed) || 0,
-    vouchersRedeemed: Number(raw.vouchersRedeemed) || 0,
+    campaignId: typeof raw.campaign_id === 'string' ? raw.campaign_id : '',
+    decisionStatus: (raw.decision_status as EventDecisionStatus) || 'Proposed',
+    assignedPic: typeof raw.assigned_pic === 'string' ? raw.assigned_pic : '',
+    actualAttendance: Number(raw.actual_attendance) || 0,
+    salesGenerated: Number(raw.sales_generated) || 0,
+    vouchersDistributed: Number(raw.vouchers_distributed) || 0,
+    vouchersRedeemed: Number(raw.vouchers_redeemed) || 0,
     notes: typeof raw.notes === 'string' ? raw.notes : '',
     photos: typeof raw.photos === 'string' ? raw.photos : '',
     startAt: fallbackStart,
     endAt: fallbackEnd,
-    proposedDate: typeof raw.proposedDate === 'string' && raw.proposedDate
-      ? raw.proposedDate
+    proposedDate: typeof raw.proposed_date === 'string' && raw.proposed_date
+      ? raw.proposed_date
       : formatDateInput(fallbackStart),
-    submitterId: typeof raw.submitterId === 'string' ? raw.submitterId : '',
-    createdAt: raw.createdAt instanceof Timestamp ? raw.createdAt : null,
-    updatedAt: raw.updatedAt instanceof Timestamp ? raw.updatedAt : null
+    submitterId: typeof raw.submitter_user_id === 'string' ? raw.submitter_user_id : '',
+    createdAt: parseEventDate(raw.created_at),
+    updatedAt: parseEventDate(raw.updated_at)
+  };
+}
+
+function normalizeLinkedTask(row: any): LinkedTaskRecord {
+  return {
+    id: typeof row.id === 'string' ? row.id : '',
+    title: typeof row.title === 'string' ? row.title : '',
+    event_id: typeof row.event_id === 'string' ? row.event_id : '',
+    outlet_id: typeof row.outlet_id === 'string' ? row.outlet_id : '',
+    assignedToUid: typeof row.assigned_to_user_id === 'string' ? row.assigned_to_user_id : '',
+    status: (row.status as LinkedTaskStatus) || 'assigned',
+    dueAt: parseEventDate(row.due_at)
   };
 }
 
@@ -270,23 +274,45 @@ export function Events() {
       return;
     }
 
-    const unsubscribe = onSnapshot(
-      query(collection(db, 'events'), orderBy('createdAt', 'desc')),
-      (snapshot) => {
-        const mapped = snapshot.docs
-          .map((eventDoc) => normalizeEvent(eventDoc.data(), eventDoc.id))
-          .sort((left, right) => left.startAt.getTime() - right.startAt.getTime());
+    let isMounted = true;
 
-        setEvents(mapped);
-        setLoading(false);
-      },
-      (error) => {
+    const loadEvents = async () => {
+      setLoading(true);
+
+      const { data, error } = await supabase
+        .from('events')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (!isMounted) return;
+
+      if (error) {
         console.error('Error fetching events:', error);
         setLoading(false);
+        return;
       }
-    );
 
-    return () => unsubscribe();
+      const mapped = (data || [])
+        .map(normalizeEvent)
+        .sort((left, right) => left.startAt.getTime() - right.startAt.getTime());
+
+      setEvents(mapped);
+      setLoading(false);
+    };
+
+    void loadEvents();
+
+    const channel = supabase
+      .channel('core-ops-events')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'events' }, () => {
+        void loadEvents();
+      })
+      .subscribe();
+
+    return () => {
+      isMounted = false;
+      void supabase.removeChannel(channel);
+    };
   }, [user, canViewEvents]);
 
   useEffect(() => {
@@ -295,32 +321,50 @@ export function Events() {
       return;
     }
 
-    const tasksQuery = role === 'admin'
-      ? query(collection(db, 'tasks'), orderBy('createdAt', 'desc'))
-      : query(collection(db, 'tasks'), where('assignedToUid', '==', user.uid));
-
-    const unsubscribe = onSnapshot(tasksQuery, (snapshot) => {
-      const mapped = snapshot.docs.map((taskDoc) => {
-        const taskData = taskDoc.data();
-        return {
-          id: taskDoc.id,
-          title: typeof taskData.title === 'string' ? taskData.title : '',
-          event_id: typeof taskData.event_id === 'string' ? taskData.event_id : '',
-          outlet_id: typeof taskData.outlet_id === 'string' ? taskData.outlet_id : '',
-          assignedToUid: typeof taskData.assignedToUid === 'string' ? taskData.assignedToUid : '',
-          status: taskData.status as LinkedTaskStatus,
-          dueAt: taskData.dueAt instanceof Timestamp ? taskData.dueAt : null
-        } satisfies LinkedTaskRecord;
-      });
-
-      setLinkedTasks(mapped);
-    }, (error) => {
-      console.error('Error fetching linked tasks:', error);
+    if (role !== 'admin' && !userData?.id) {
       setLinkedTasks([]);
-    });
+      return;
+    }
 
-    return () => unsubscribe();
-  }, [user, role, canSeeLinkedTasks]);
+    let isMounted = true;
+
+    const loadLinkedTasks = async () => {
+      let request = supabase
+        .from('tasks')
+        .select('id, title, event_id, outlet_id, assigned_to_user_id, status, due_at, created_at')
+        .order('created_at', { ascending: false });
+
+      if (role !== 'admin') {
+        request = request.eq('assigned_to_user_id', userData.id);
+      }
+
+      const { data, error } = await request;
+
+      if (!isMounted) return;
+
+      if (error) {
+        console.error('Error fetching linked tasks:', error);
+        setLinkedTasks([]);
+        return;
+      }
+
+      setLinkedTasks((data || []).map(normalizeLinkedTask));
+    };
+
+    void loadLinkedTasks();
+
+    const channel = supabase
+      .channel('core-ops-event-linked-tasks')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, () => {
+        void loadLinkedTasks();
+      })
+      .subscribe();
+
+    return () => {
+      isMounted = false;
+      void supabase.removeChannel(channel);
+    };
+  }, [user, userData?.id, role, canSeeLinkedTasks]);
 
   const calendarDays = useMemo(() => {
     const monthStart = startOfMonth(currentMonth);
@@ -355,8 +399,8 @@ export function Events() {
     return linkedTasks
       .filter((task) => task.event_id === editorState.id)
       .sort((left, right) => {
-        const leftTime = left.dueAt?.toMillis() || 0;
-        const rightTime = right.dueAt?.toMillis() || 0;
+        const leftTime = left.dueAt?.getTime() || 0;
+        const rightTime = right.dueAt?.getTime() || 0;
         return leftTime - rightTime;
       });
   }, [editorState?.id, linkedTasks, canSeeLinkedTasks]);
@@ -376,9 +420,15 @@ export function Events() {
 
     setIsUploading(true);
     try {
-      const storageRef = ref(storage, `events/${editorState.id}/proofs/${Date.now()}-${file.name}`);
-      await uploadBytes(storageRef, file);
-      const url = await getDownloadURL(storageRef);
+      const fullPath = `events/${editorState.id}/proofs/${Date.now()}-${file.name}`;
+      const { error: uploadError } = await supabase.storage
+        .from('event-proofs')
+        .upload(fullPath, file, { upsert: false });
+
+      if (uploadError) throw uploadError;
+
+      const { data } = supabase.storage.from('event-proofs').getPublicUrl(fullPath);
+      const url = data.publicUrl;
       setEditorState((current) => current ? { ...current, photos: url } : current);
     } catch (error) {
       console.error('Error uploading file:', error);
@@ -391,7 +441,7 @@ export function Events() {
 
   const handleSaveEvent = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!editorState || !canManageEvents || !user) return;
+    if (!editorState || !canManageEvents || !userData?.id) return;
 
     const startDate = new Date(editorState.startAt);
     const endDate = new Date(editorState.endAt);
@@ -409,38 +459,43 @@ export function Events() {
     }
 
     const payload = {
-      eventName: editorState.eventName.trim(),
+      event_name: editorState.eventName.trim(),
       organizer: editorState.organizer.trim(),
-      outlet: editorState.outlet.trim(),
+      outlet_id: null,
+      outlet_name: editorState.outlet.trim(),
       type: editorState.type.trim() || 'Internal',
-      campaignId: editorState.campaignId.trim(),
-      decisionStatus: editorState.decisionStatus,
-      assignedPic: editorState.assignedPic.trim(),
-      actualAttendance: Number(editorState.actualAttendance) || 0,
-      salesGenerated: Number(editorState.salesGenerated) || 0,
-      vouchersDistributed: Number(editorState.vouchersDistributed) || 0,
-      vouchersRedeemed: Number(editorState.vouchersRedeemed) || 0,
+      campaign_id: toNullableUuid(editorState.campaignId),
+      decision_status: editorState.decisionStatus,
+      assigned_pic: editorState.assignedPic.trim(),
+      actual_attendance: Number(editorState.actualAttendance) || 0,
+      sales_generated: Number(editorState.salesGenerated) || 0,
+      vouchers_distributed: Number(editorState.vouchersDistributed) || 0,
+      vouchers_redeemed: Number(editorState.vouchersRedeemed) || 0,
       notes: editorState.notes.trim(),
       photos: editorState.photos,
-      startAt: Timestamp.fromDate(startDate),
-      endAt: Timestamp.fromDate(endDate),
-      proposedDate: formatDateInput(startDate)
+      start_at: startDate.toISOString(),
+      end_at: endDate.toISOString(),
+      proposed_date: formatDateInput(startDate),
+      updated_at: nowIso()
     };
 
     setSubmitting(true);
     try {
       if (editorState.id) {
-        await updateDoc(doc(db, 'events', editorState.id), {
-          ...payload,
-          updatedAt: serverTimestamp()
-        });
+        const { error } = await supabase
+          .from('events')
+          .update(payload)
+          .eq('id', editorState.id);
+
+        if (error) throw error;
       } else {
-        await addDoc(collection(db, 'events'), {
+        const { error } = await supabase.from('events').insert({
           ...payload,
-          submitterId: user.uid,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp()
+          submitter_user_id: userData.id,
+          created_at: nowIso()
         });
+
+        if (error) throw error;
       }
 
       setEditorState(null);
@@ -907,7 +962,7 @@ export function Events() {
                                 <div>
                                   <p className="font-medium text-neutral-900">{task.title}</p>
                                   <p className="mt-1 text-sm text-neutral-500">
-                                    {task.dueAt ? `Due ${task.dueAt.toDate().toLocaleString()}` : 'No due date'}
+                                    {task.dueAt ? `Due ${task.dueAt.toLocaleString()}` : 'No due date'}
                                   </p>
                                 </div>
                                 <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider ${linkedTaskStatusTone(task.status)}`}>

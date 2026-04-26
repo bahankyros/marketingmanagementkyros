@@ -1,20 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { CalendarClock, Gift, Plus, Store, Ticket, X } from 'lucide-react';
-import {
-  Timestamp,
-  addDoc,
-  collection,
-  doc,
-  onSnapshot,
-  orderBy,
-  query,
-  serverTimestamp,
-  updateDoc,
-  where
-} from 'firebase/firestore';
-import { db } from '../lib/firebase';
 import { useAuth } from '../lib/AuthContext';
+import { supabase } from '../lib/supabase';
 
 type VoucherType = 'grab' | 'foodpanda' | 'instore' | 'campaign' | 'other';
 
@@ -25,8 +13,8 @@ type VoucherRecord = {
   voucherType: VoucherType;
   amount: number;
   notes: string;
-  usedAt: Timestamp | null;
-  createdAt: Timestamp | null;
+  usedAt: Date | null;
+  createdAt: Date | null;
 };
 
 type VoucherFormState = {
@@ -47,18 +35,43 @@ type VoucherFeedback = {
   message: string;
 } | null;
 
-function toDateTimeLocal(value: Timestamp | Date | string | null | undefined) {
+function toDateTimeLocal(value: Date | string | null | undefined) {
   if (!value) return '';
-  const date = value instanceof Timestamp
-    ? value.toDate()
-    : value instanceof Date
-      ? value
-      : new Date(value);
+  const date = value instanceof Date
+    ? value
+    : new Date(value);
 
   if (Number.isNaN(date.getTime())) return '';
 
   const offset = date.getTimezoneOffset();
   return new Date(date.getTime() - offset * 60000).toISOString().slice(0, 16);
+}
+
+function normalizeDate(value: unknown) {
+  if (!value) return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+  return null;
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function normalizeVoucher(row: any): VoucherRecord {
+  return {
+    id: typeof row.id === 'string' ? row.id : '',
+    outlet_id: typeof row.outlet_id === 'string' ? row.outlet_id : '',
+    loggedByUid: typeof row.logged_by_user_id === 'string' ? row.logged_by_user_id : '',
+    voucherType: (row.voucher_type as VoucherType) || 'other',
+    amount: Number(row.amount) || 0,
+    notes: typeof row.notes === 'string' ? row.notes : '',
+    usedAt: normalizeDate(row.used_at),
+    createdAt: normalizeDate(row.created_at)
+  };
 }
 
 function buildDefaultForm(outletId: string) {
@@ -93,21 +106,44 @@ export function Vouchers() {
       return;
     }
 
-    const outletsQuery = query(collection(db, 'outlets'), orderBy('name'));
-    const unsubscribe = onSnapshot(outletsQuery, (snapshot) => {
+    let isMounted = true;
+
+    const loadOutlets = async () => {
+      const { data, error } = await supabase
+        .from('outlets')
+        .select('id, name')
+        .order('name', { ascending: true });
+
+      if (!isMounted) return;
+
+      if (error) {
+        console.error('Error loading voucher outlets:', error);
+        setMasterOutlets([]);
+        return;
+      }
+
       setMasterOutlets(
-        snapshot.docs
-          .map((outletDoc) => {
-            const outletData = outletDoc.data();
-            return typeof outletData.name === 'string' && outletData.name.trim()
-              ? { id: outletDoc.id, name: outletData.name.trim() }
-              : null;
-          })
+        (data || [])
+          .map((outlet) => typeof outlet.name === 'string' && outlet.name.trim()
+            ? { id: outlet.id, name: outlet.name.trim() }
+            : null)
           .filter((outlet): outlet is MasterOutlet => outlet !== null)
       );
-    });
+    };
 
-    return () => unsubscribe();
+    void loadOutlets();
+
+    const channel = supabase
+      .channel('core-ops-voucher-outlets')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'outlets' }, () => {
+        void loadOutlets();
+      })
+      .subscribe();
+
+    return () => {
+      isMounted = false;
+      void supabase.removeChannel(channel);
+    };
   }, [user, isAdmin]);
 
   useEffect(() => {
@@ -123,41 +159,56 @@ export function Vouchers() {
       return;
     }
 
-    setLoading(true);
-    const vouchersQuery = isSupervisor
-      ? query(collection(db, 'vouchers'), where('outlet_id', '==', userData.outlet_id))
-      : query(collection(db, 'vouchers'), orderBy('usedAt', 'desc'));
+    let isMounted = true;
 
-    const unsubscribe = onSnapshot(vouchersQuery, (snapshot) => {
-      const normalized = snapshot.docs
-        .map((voucherDoc) => {
-          const voucherData = voucherDoc.data();
-          return {
-            id: voucherDoc.id,
-            outlet_id: typeof voucherData.outlet_id === 'string' ? voucherData.outlet_id : '',
-            loggedByUid: typeof voucherData.loggedByUid === 'string' ? voucherData.loggedByUid : '',
-            voucherType: voucherData.voucherType as VoucherType,
-            amount: Number(voucherData.amount) || 0,
-            notes: typeof voucherData.notes === 'string' ? voucherData.notes : '',
-            usedAt: voucherData.usedAt instanceof Timestamp ? voucherData.usedAt : null,
-            createdAt: voucherData.createdAt instanceof Timestamp ? voucherData.createdAt : null
-          };
-        })
+    const loadVouchers = async () => {
+      setLoading(true);
+
+      let request = supabase
+        .from('vouchers')
+        .select('*')
+        .order('used_at', { ascending: false });
+
+      if (isSupervisor) {
+        request = request.eq('outlet_id', userData.outlet_id);
+      }
+
+      const { data, error } = await request;
+
+      if (!isMounted) return;
+
+      if (error) {
+        console.error('Error loading vouchers:', error);
+        setFeedback({ tone: 'error', message: 'Failed to load vouchers.' });
+        setLoading(false);
+        return;
+      }
+
+      const normalized = (data || [])
+        .map(normalizeVoucher)
         .sort((left, right) => {
-          const leftTime = left.usedAt?.toMillis() || 0;
-          const rightTime = right.usedAt?.toMillis() || 0;
+          const leftTime = left.usedAt?.getTime() || 0;
+          const rightTime = right.usedAt?.getTime() || 0;
           return rightTime - leftTime;
         });
 
       setVouchers(normalized);
       setLoading(false);
-    }, (error) => {
-      console.error('Error loading vouchers:', error);
-      setFeedback({ tone: 'error', message: 'Failed to load vouchers.' });
-      setLoading(false);
-    });
+    };
 
-    return () => unsubscribe();
+    void loadVouchers();
+
+    const channel = supabase
+      .channel('core-ops-vouchers')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'vouchers' }, () => {
+        void loadVouchers();
+      })
+      .subscribe();
+
+    return () => {
+      isMounted = false;
+      void supabase.removeChannel(channel);
+    };
   }, [user, userData, isSupervisor]);
 
   const outletLabelFor = (outletId: string) => {
@@ -192,7 +243,7 @@ export function Vouchers() {
   const canEditVoucher = (voucher: VoucherRecord) => {
     if (isAdmin) return true;
     return isSupervisor &&
-      voucher.loggedByUid === user?.uid &&
+      voucher.loggedByUid === userData?.id &&
       voucher.outlet_id === userData?.outlet_id;
   };
 
@@ -221,11 +272,12 @@ export function Vouchers() {
 
     const payload = {
       outlet_id: outletId,
-      loggedByUid: editingVoucher?.loggedByUid || user.uid,
-      voucherType: formState.voucherType,
+      logged_by_user_id: editingVoucher?.loggedByUid || userData.id,
+      voucher_type: formState.voucherType,
       amount,
       notes: formState.notes.trim(),
-      usedAt: Timestamp.fromDate(usedAtDate)
+      used_at: usedAtDate.toISOString(),
+      updated_at: nowIso()
     };
 
     setSubmitting(true);
@@ -233,17 +285,19 @@ export function Vouchers() {
 
     try {
       if (editingVoucher) {
-        await updateDoc(doc(db, 'vouchers', editingVoucher.id), {
-          ...payload,
-          createdAt: editingVoucher.createdAt,
-          updatedAt: serverTimestamp()
-        });
+        const { error } = await supabase
+          .from('vouchers')
+          .update(payload)
+          .eq('id', editingVoucher.id);
+
+        if (error) throw error;
       } else {
-        await addDoc(collection(db, 'vouchers'), {
+        const { error } = await supabase.from('vouchers').insert({
           ...payload,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp()
+          created_at: nowIso()
         });
+
+        if (error) throw error;
       }
 
       setIsEditorOpen(false);
@@ -387,7 +441,7 @@ export function Vouchers() {
                   <div className="text-sm text-neutral-500">
                     <div className="flex items-center gap-2">
                       <CalendarClock className="h-4 w-4" />
-                      <span>{voucher.usedAt ? voucher.usedAt.toDate().toLocaleString() : 'No time'}</span>
+                      <span>{voucher.usedAt ? voucher.usedAt.toLocaleString() : 'No time'}</span>
                     </div>
                   </div>
                   {canEditVoucher(voucher) && (

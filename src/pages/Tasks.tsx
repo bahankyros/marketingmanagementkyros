@@ -12,21 +12,8 @@ import {
   UserRound,
   X
 } from 'lucide-react';
-import {
-  Timestamp,
-  addDoc,
-  collection,
-  doc,
-  onSnapshot,
-  orderBy,
-  query,
-  serverTimestamp,
-  updateDoc,
-  where
-} from 'firebase/firestore';
-import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
-import { db, storage } from '../lib/firebase';
 import { useAuth } from '../lib/AuthContext';
+import { supabase } from '../lib/supabase';
 
 type TaskType = 'mall_display' | 'voucher_follow_up' | 'general';
 type TaskStatus = 'assigned' | 'in_progress' | 'proof_submitted' | 'approved' | 'rejected' | 'completed';
@@ -41,12 +28,12 @@ type TaskRecord = {
   taskType: TaskType;
   event_id: string;
   status: TaskStatus;
-  dueAt: Timestamp | null;
+  dueAt: Date | null;
   proofText: string;
   proofImageUrl: string;
   proofImagePath: string;
-  createdAt: Timestamp | null;
-  updatedAt: Timestamp | null;
+  createdAt: Date | null;
+  updatedAt: Date | null;
 };
 
 type SupervisorOption = {
@@ -87,14 +74,12 @@ type UploadState =
   | { status: 'uploaded'; url: string; path: string; error: string | null }
   | { status: 'error'; url: string; path: string; error: string | null };
 
-function toDateTimeLocal(value: Timestamp | Date | string | null | undefined) {
+function toDateTimeLocal(value: Date | string | null | undefined) {
   if (!value) return '';
 
-  const date = value instanceof Timestamp
-    ? value.toDate()
-    : value instanceof Date
-      ? value
-      : new Date(value);
+  const date = value instanceof Date
+    ? value
+    : new Date(value);
 
   if (Number.isNaN(date.getTime())) return '';
 
@@ -103,10 +88,6 @@ function toDateTimeLocal(value: Timestamp | Date | string | null | undefined) {
 }
 
 function parseEventDate(value: unknown) {
-  if (value instanceof Timestamp) {
-    return value.toDate();
-  }
-
   if (typeof value === 'string' && value.trim()) {
     const parsed = new Date(value);
     if (!Number.isNaN(parsed.getTime())) {
@@ -115,6 +96,20 @@ function parseEventDate(value: unknown) {
   }
 
   return null;
+}
+
+function normalizeDate(value: unknown) {
+  if (!value) return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+  return null;
+}
+
+function nowIso() {
+  return new Date().toISOString();
 }
 
 function eventMatchesOutlet(event: EventOption, outletId: string, outletName: string) {
@@ -176,6 +171,36 @@ function statusTone(status: TaskStatus) {
   }
 }
 
+function normalizeTask(row: any): TaskRecord {
+  return {
+    id: typeof row.id === 'string' ? row.id : '',
+    title: typeof row.title === 'string' ? row.title : '',
+    description: typeof row.description === 'string' ? row.description : '',
+    outlet_id: typeof row.outlet_id === 'string' ? row.outlet_id : '',
+    assignedByUid: typeof row.assigned_by_user_id === 'string' ? row.assigned_by_user_id : '',
+    assignedToUid: typeof row.assigned_to_user_id === 'string' ? row.assigned_to_user_id : '',
+    taskType: (row.task_type as TaskType) || 'general',
+    event_id: typeof row.event_id === 'string' ? row.event_id : '',
+    status: (row.status as TaskStatus) || 'assigned',
+    dueAt: normalizeDate(row.due_at),
+    proofText: typeof row.proof_text === 'string' ? row.proof_text : '',
+    proofImageUrl: typeof row.proof_image_url === 'string' ? row.proof_image_url : '',
+    proofImagePath: typeof row.proof_image_path === 'string' ? row.proof_image_path : '',
+    createdAt: normalizeDate(row.created_at),
+    updatedAt: normalizeDate(row.updated_at)
+  };
+}
+
+function normalizeEventOption(row: any): EventOption {
+  return {
+    id: typeof row.id === 'string' ? row.id : '',
+    eventName: typeof row.event_name === 'string' ? row.event_name : '',
+    outlet: typeof row.outlet_name === 'string' ? row.outlet_name : '',
+    startAt: parseEventDate(row.start_at) || parseEventDate(row.proposed_date),
+    endAt: parseEventDate(row.end_at)
+  };
+}
+
 export function Tasks() {
   const { user, userData } = useAuth();
   const role = userData?.role;
@@ -203,48 +228,58 @@ export function Tasks() {
       return;
     }
 
-    setLoading(true);
-    const tasksQuery = isAdmin
-      ? query(collection(db, 'tasks'), orderBy('createdAt', 'desc'))
-      : query(collection(db, 'tasks'), where('assignedToUid', '==', user.uid));
+    if (!isAdmin && !userData.id) {
+      setTasks([]);
+      setLoading(false);
+      return;
+    }
 
-    const unsubscribe = onSnapshot(tasksQuery, (snapshot) => {
-      const normalized = snapshot.docs
-        .map((taskDoc) => {
-          const taskData = taskDoc.data();
-          return {
-            id: taskDoc.id,
-            title: typeof taskData.title === 'string' ? taskData.title : '',
-            description: typeof taskData.description === 'string' ? taskData.description : '',
-            outlet_id: typeof taskData.outlet_id === 'string' ? taskData.outlet_id : '',
-            assignedByUid: typeof taskData.assignedByUid === 'string' ? taskData.assignedByUid : '',
-            assignedToUid: typeof taskData.assignedToUid === 'string' ? taskData.assignedToUid : '',
-            taskType: taskData.taskType as TaskType,
-            event_id: typeof taskData.event_id === 'string' ? taskData.event_id : '',
-            status: taskData.status as TaskStatus,
-            dueAt: taskData.dueAt instanceof Timestamp ? taskData.dueAt : null,
-            proofText: typeof taskData.proofText === 'string' ? taskData.proofText : '',
-            proofImageUrl: typeof taskData.proofImageUrl === 'string' ? taskData.proofImageUrl : '',
-            proofImagePath: typeof taskData.proofImagePath === 'string' ? taskData.proofImagePath : '',
-            createdAt: taskData.createdAt instanceof Timestamp ? taskData.createdAt : null,
-            updatedAt: taskData.updatedAt instanceof Timestamp ? taskData.updatedAt : null
-          };
-        })
-        .sort((left, right) => {
-          const leftTime = left.createdAt?.toMillis() || 0;
-          const rightTime = right.createdAt?.toMillis() || 0;
-          return rightTime - leftTime;
-        });
+    let isMounted = true;
+
+    const loadTasks = async () => {
+      setLoading(true);
+
+      let request = supabase
+        .from('tasks')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (!isAdmin) {
+        request = request.eq('assigned_to_user_id', userData.id);
+      }
+
+      const { data, error } = await request;
+
+      if (!isMounted) return;
+
+      if (error) {
+        console.error('Error loading tasks:', error);
+        setFeedback({ tone: 'error', message: 'Failed to load tasks.' });
+        setLoading(false);
+        return;
+      }
+
+      const normalized = (data || [])
+        .map(normalizeTask)
+        .sort((left, right) => (right.createdAt?.getTime() || 0) - (left.createdAt?.getTime() || 0));
 
       setTasks(normalized);
       setLoading(false);
-    }, (error) => {
-      console.error('Error loading tasks:', error);
-      setFeedback({ tone: 'error', message: 'Failed to load tasks.' });
-      setLoading(false);
-    });
+    };
 
-    return () => unsubscribe();
+    void loadTasks();
+
+    const channel = supabase
+      .channel('core-ops-tasks')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, () => {
+        void loadTasks();
+      })
+      .subscribe();
+
+    return () => {
+      isMounted = false;
+      void supabase.removeChannel(channel);
+    };
   }, [user, userData, isAdmin]);
 
   useEffect(() => {
@@ -253,18 +288,24 @@ export function Tasks() {
       return;
     }
 
-    const unsubscribe = onSnapshot(query(collection(db, 'events'), orderBy('createdAt', 'desc')), (snapshot) => {
-      const normalized = snapshot.docs
-        .map((eventDoc) => {
-          const eventData = eventDoc.data();
-          return {
-            id: eventDoc.id,
-            eventName: typeof eventData.eventName === 'string' ? eventData.eventName : '',
-            outlet: typeof eventData.outlet === 'string' ? eventData.outlet : '',
-            startAt: parseEventDate(eventData.startAt) || parseEventDate(eventData.proposedDate),
-            endAt: parseEventDate(eventData.endAt)
-          } satisfies EventOption;
-        })
+    let isMounted = true;
+
+    const loadEvents = async () => {
+      const { data, error } = await supabase
+        .from('events')
+        .select('id, event_name, outlet_name, start_at, end_at, proposed_date')
+        .order('created_at', { ascending: false });
+
+      if (!isMounted) return;
+
+      if (error) {
+        console.error('Error loading events for task linking:', error);
+        setFeedback({ tone: 'error', message: 'Failed to load linked events.' });
+        return;
+      }
+
+      const normalized = (data || [])
+        .map(normalizeEventOption)
         .filter((event) => event.eventName.trim())
         .sort((left, right) => {
           const leftTime = left.startAt?.getTime() || 0;
@@ -273,12 +314,21 @@ export function Tasks() {
         });
 
       setEvents(normalized);
-    }, (error) => {
-      console.error('Error loading events for task linking:', error);
-      setFeedback({ tone: 'error', message: 'Failed to load linked events.' });
-    });
+    };
 
-    return () => unsubscribe();
+    void loadEvents();
+
+    const channel = supabase
+      .channel('core-ops-task-events')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'events' }, () => {
+        void loadEvents();
+      })
+      .subscribe();
+
+    return () => {
+      isMounted = false;
+      void supabase.removeChannel(channel);
+    };
   }, [user, userData]);
 
   useEffect(() => {
@@ -287,28 +337,38 @@ export function Tasks() {
       return;
     }
 
-    const unsubscribe = onSnapshot(collection(db, 'users'), (snapshot) => {
-      const normalized = snapshot.docs
-        .map((userDoc) => {
-          const profile = userDoc.data();
-          const authUid = typeof profile.auth_uid === 'string' ? profile.auth_uid.trim() : '';
+    let isMounted = true;
+
+    const loadSupervisors = async () => {
+      const { data, error } = await supabase
+        .from('users')
+        .select('id, email, display_name, role, outlet_id, outlet_name, status')
+        .eq('role', 'supervisor')
+        .eq('status', 'active')
+        .order('display_name', { ascending: true });
+
+      if (!isMounted) return;
+
+      if (error) {
+        console.error('Error loading supervisors:', error);
+        setFeedback({ tone: 'error', message: 'Failed to load supervisors.' });
+        return;
+      }
+
+      const normalized = (data || [])
+        .map((profile) => {
           const outletId = typeof profile.outlet_id === 'string' ? profile.outlet_id.trim() : '';
           const outletName = typeof profile.outlet_name === 'string' ? profile.outlet_name.trim() : '';
           const displayName = typeof profile.display_name === 'string' && profile.display_name.trim()
             ? profile.display_name.trim()
-            : (typeof profile.email === 'string' ? profile.email.trim() : userDoc.id);
+            : (typeof profile.email === 'string' ? profile.email.trim() : profile.id);
 
-          if (
-            profile.role !== 'supervisor' ||
-            profile.status !== 'active' ||
-            !authUid ||
-            !outletId
-          ) {
+          if (!profile.id || !outletId) {
             return null;
           }
 
           return {
-            uid: authUid,
+            uid: profile.id,
             displayName,
             email: typeof profile.email === 'string' ? profile.email.trim() : '',
             outletId,
@@ -319,12 +379,21 @@ export function Tasks() {
         .sort((left, right) => left.displayName.localeCompare(right.displayName));
 
       setSupervisors(normalized);
-    }, (error) => {
-      console.error('Error loading supervisors:', error);
-      setFeedback({ tone: 'error', message: 'Failed to load supervisors.' });
-    });
+    };
 
-    return () => unsubscribe();
+    void loadSupervisors();
+
+    const channel = supabase
+      .channel('core-ops-task-supervisors')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, () => {
+        void loadSupervisors();
+      })
+      .subscribe();
+
+    return () => {
+      isMounted = false;
+      void supabase.removeChannel(channel);
+    };
   }, [user, isAdmin]);
 
   const supervisorMap = useMemo(
@@ -377,7 +446,7 @@ export function Tasks() {
 
   const handleCreateTask = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!isAdmin || !user) return;
+    if (!isAdmin || !userData?.id) return;
 
     const dueDate = new Date(createForm.dueAt);
     const linkedEvent = createForm.eventId ? eventsMap.get(createForm.eventId) || null : null;
@@ -395,22 +464,24 @@ export function Tasks() {
     setFeedback(null);
 
     try {
-      await addDoc(collection(db, 'tasks'), {
+      const { error } = await supabase.from('tasks').insert({
         title: createForm.title.trim(),
         description: createForm.description.trim(),
         outlet_id: createForm.outletId,
-        assignedByUid: user.uid,
-        assignedToUid: createForm.assignedToUid,
-        taskType: createForm.taskType,
-        event_id: createForm.eventId,
+        assigned_by_user_id: userData.id,
+        assigned_to_user_id: createForm.assignedToUid,
+        task_type: createForm.taskType,
+        event_id: createForm.eventId || null,
         status: 'assigned',
-        dueAt: Timestamp.fromDate(dueDate),
-        proofText: '',
-        proofImageUrl: '',
-        proofImagePath: '',
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
+        due_at: dueDate.toISOString(),
+        proof_text: '',
+        proof_image_url: '',
+        proof_image_path: '',
+        created_at: nowIso(),
+        updated_at: nowIso()
       });
+
+      if (error) throw error;
 
       setIsCreateOpen(false);
       setCreateForm(buildDefaultCreateForm());
@@ -430,9 +501,14 @@ export function Tasks() {
     setProofUpload((current) => ({ ...current, status: 'uploading', error: null }));
     try {
       const fullPath = `tasks/${selectedTask.id}/${Date.now()}-${file.name}`;
-      const storageRef = ref(storage, fullPath);
-      await uploadBytes(storageRef, file);
-      const url = await getDownloadURL(storageRef);
+      const { error: uploadError } = await supabase.storage
+        .from('task-proofs')
+        .upload(fullPath, file, { upsert: false });
+
+      if (uploadError) throw uploadError;
+
+      const { data } = supabase.storage.from('task-proofs').getPublicUrl(fullPath);
+      const url = data.publicUrl;
       setProofUpload({ status: 'uploaded', url, path: fullPath, error: null });
     } catch (error) {
       console.error('Error uploading task proof:', error);
@@ -453,13 +529,18 @@ export function Tasks() {
     setFeedback(null);
 
     try {
-      await updateDoc(doc(db, 'tasks', selectedTask.id), {
-        status: supervisorStatus,
-        proofText: proofTextDraft.trim(),
-        proofImageUrl: proofUpload.url || selectedTask.proofImageUrl || '',
-        proofImagePath: proofUpload.path || selectedTask.proofImagePath || '',
-        updatedAt: serverTimestamp()
-      });
+      const { error } = await supabase
+        .from('tasks')
+        .update({
+          status: supervisorStatus,
+          proof_text: proofTextDraft.trim(),
+          proof_image_url: proofUpload.url || selectedTask.proofImageUrl || '',
+          proof_image_path: proofUpload.path || selectedTask.proofImagePath || '',
+          updated_at: nowIso()
+        })
+        .eq('id', selectedTask.id);
+
+      if (error) throw error;
 
       setSelectedTask(null);
       setFeedback({
@@ -483,22 +564,16 @@ export function Tasks() {
     setFeedback(null);
 
     try {
-      await updateDoc(doc(db, 'tasks', selectedTask.id), {
-        title: selectedTask.title,
-        description: selectedTask.description,
-        outlet_id: selectedTask.outlet_id,
-        assignedByUid: selectedTask.assignedByUid,
-        assignedToUid: selectedTask.assignedToUid,
-        taskType: selectedTask.taskType,
-        event_id: selectedTask.event_id,
-        status: adminReviewStatus,
-        dueAt: selectedTask.dueAt,
-        proofText: selectedTask.proofText,
-        proofImageUrl: selectedTask.proofImageUrl,
-        proofImagePath: selectedTask.proofImagePath,
-        createdAt: selectedTask.createdAt,
-        updatedAt: serverTimestamp()
-      });
+      const { error } = await supabase
+        .from('tasks')
+        .update({
+          event_id: selectedTask.event_id || null,
+          status: adminReviewStatus,
+          updated_at: nowIso()
+        })
+        .eq('id', selectedTask.id);
+
+      if (error) throw error;
 
       setSelectedTask(null);
       setFeedback({ tone: 'success', message: `Task marked ${adminReviewStatus.replace('_', ' ')}.` });
@@ -649,7 +724,7 @@ export function Tasks() {
                     </div>
                     <div className="flex items-center gap-2">
                       <CalendarClock className="h-4 w-4" />
-                      <span>{task.dueAt ? task.dueAt.toDate().toLocaleString() : 'No due date'}</span>
+                      <span>{task.dueAt ? task.dueAt.toLocaleString() : 'No due date'}</span>
                     </div>
                   </div>
                 </div>
@@ -893,7 +968,7 @@ export function Tasks() {
                   )}
                 </div>
 
-                {isSupervisor && selectedTask.assignedToUid === user?.uid && (
+                {isSupervisor && selectedTask.assignedToUid === userData?.id && (
                   <div className="space-y-5 rounded-2xl border border-neutral-100 p-4">
                     <div className="space-y-1">
                       <label className="text-sm font-medium text-neutral-700">Progress Status</label>
@@ -1002,7 +1077,7 @@ export function Tasks() {
                 >
                   Close
                 </button>
-                {isSupervisor && selectedTask.assignedToUid === user?.uid && (
+                {isSupervisor && selectedTask.assignedToUid === userData?.id && (
                   <button
                     type="button"
                     onClick={handleSupervisorSave}
