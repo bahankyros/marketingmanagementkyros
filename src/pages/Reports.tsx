@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { Download, FileText, Database, ShieldAlert, Ticket, TrendingUp, DollarSign } from 'lucide-react';
-import { collection, getDocs, onSnapshot } from 'firebase/firestore';
-import { db } from '../lib/firebase';
+import { supabase } from '../lib/supabase';
+import { subscribeToTable } from '../lib/supabaseData';
 
 export function Reports() {
   const [downloading, setDownloading] = useState<string | null>(null);
@@ -16,36 +16,46 @@ export function Reports() {
   });
 
   useEffect(() => {
-    // We aggregate data from partnerships, events, and delivery_promos
-    const unsubPartnerships = onSnapshot(collection(db, 'partnerships'), (snap) => {
-      let pushed = 0;
-      let claimed = 0;
-      snap.forEach(doc => {
-        const d = doc.data();
-        if (d.vouchersAllocated) pushed += Number(d.vouchersAllocated);
-        if (d.vouchersRedeemed) claimed += Number(d.vouchersRedeemed);
-      });
-      setVoucherData(prev => recalcVouchers({...prev, p: {pushed, claimed}}));
-    });
+    const fetchVoucherData = async () => {
+      const [partnershipsResult, eventsResult, promosResult] = await Promise.all([
+        supabase.from('partnerships').select('vouchers_allocated, vouchers_redeemed'),
+        supabase.from('events').select('vouchers_distributed, vouchers_redeemed'),
+        supabase.from('delivery_promos').select('spend')
+      ]);
 
-    const unsubEvents = onSnapshot(collection(db, 'events'), (snap) => {
-      let pushed = 0;
-      let claimed = 0;
-      snap.forEach(doc => {
-        const d = doc.data();
-        if (d.vouchersDistributed) pushed += Number(d.vouchersDistributed);
-        if (d.vouchersRedeemed) claimed += Number(d.vouchersRedeemed);
-      });
-      setVoucherData(prev => recalcVouchers({...prev, e: {pushed, claimed}}));
-    });
+      const firstError = partnershipsResult.error || eventsResult.error || promosResult.error;
+      if (firstError) {
+        console.error('Voucher report aggregation error:', firstError);
+        return;
+      }
 
-    const unsubPromos = onSnapshot(collection(db, 'delivery_promos'), (snap) => {
-      let spend = 0;
-      snap.forEach(doc => {
-        const d = doc.data();
-        if (d.spend) spend += Number(d.spend);
-      });
-      setVoucherData(prev => recalcVouchers({...prev, promoSpend: spend}));
+      const partnershipTotals = (partnershipsResult.data || []).reduce((totals, item: any) => ({
+        pushed: totals.pushed + Number(item.vouchers_allocated || 0),
+        claimed: totals.claimed + Number(item.vouchers_redeemed || 0)
+      }), { pushed: 0, claimed: 0 });
+
+      const eventTotals = (eventsResult.data || []).reduce((totals, item: any) => ({
+        pushed: totals.pushed + Number(item.vouchers_distributed || 0),
+        claimed: totals.claimed + Number(item.vouchers_redeemed || 0)
+      }), { pushed: 0, claimed: 0 });
+
+      const promoSpend = (promosResult.data || []).reduce(
+        (sum, item: any) => sum + Number(item.spend || 0),
+        0
+      );
+
+      setVoucherData(recalcVouchers(partnershipTotals, eventTotals, promoSpend));
+    };
+
+    void fetchVoucherData();
+    const unsubPartnerships = subscribeToTable('reports-partnerships', 'partnerships', () => {
+      void fetchVoucherData();
+    });
+    const unsubEvents = subscribeToTable('reports-events', 'events', () => {
+      void fetchVoucherData();
+    });
+    const unsubPromos = subscribeToTable('reports-delivery-promos', 'delivery_promos', () => {
+      void fetchVoucherData();
     });
 
     return () => {
@@ -55,19 +65,18 @@ export function Reports() {
     };
   }, []);
 
-  const recalcVouchers = (state: any) => {
-    const p = state.p || {pushed: 0, claimed: 0};
-    const e = state.e || {pushed: 0, claimed: 0};
-    const spend = state.promoSpend || 0;
-    
-    const totalPushed = p.pushed + e.pushed;
-    const totalClaimed = p.claimed + e.claimed;
+  const recalcVouchers = (
+    partnerships: { pushed: number; claimed: number },
+    events: { pushed: number; claimed: number },
+    spend: number
+  ) => {
+    const totalPushed = partnerships.pushed + events.pushed;
+    const totalClaimed = partnerships.claimed + events.claimed;
     
     // In our simplified math, "spend" is attached to promos and partnerships if they had direct costs,
     // For now we just use promo spend against total claims or any specific spend track.
     
     return {
-      ...state,
       totalPushed,
       totalClaimed,
       totalSpend: spend,
@@ -104,8 +113,13 @@ export function Reports() {
   const handleExport = async (collectionName: string, filename: string, customMapping?: (docs: any[]) => any[]) => {
     try {
       setDownloading(filename);
-      const snapshot = await getDocs(collection(db, collectionName));
-      const rawData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      const { data, error } = await supabase
+        .from(collectionName)
+        .select('*');
+
+      if (error) throw error;
+
+      const rawData = data || [];
       
       const processData = customMapping ? customMapping(rawData) : rawData;
       
@@ -133,12 +147,17 @@ export function Reports() {
       let allData: any[] = [];
       
       for (const col of collections) {
-        const snap = await getDocs(collection(db, col));
-        snap.docs.forEach(doc => {
+        const { data, error } = await supabase
+          .from(col)
+          .select('*');
+
+        if (error) throw error;
+
+        (data || []).forEach((row: any) => {
           allData.push({
             _sourceCollection: col,
-            _id: doc.id,
-            ...doc.data()
+            _id: row.id,
+            ...row
           });
         });
       }

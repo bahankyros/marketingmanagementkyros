@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
-import { collection, onSnapshot, doc } from 'firebase/firestore';
-import { db } from './firebase';
 import type { AuthUser } from './AuthContext';
+import { supabase } from './supabase';
+import { subscribeToTable } from './supabaseData';
 
 type UserRole = 'admin' | 'supervisor' | 'finance';
 
@@ -72,6 +72,24 @@ function createInitialDashboardData(access: DashboardAccess) {
   };
 }
 
+function normalizeSettings(row: any) {
+  if (!row) {
+    return { ...DEFAULT_SETTINGS };
+  }
+
+  return {
+    partnershipTarget: Number(row.partnership_target ?? DEFAULT_SETTINGS.partnershipTarget),
+    displaySlotsTarget: Number(row.display_slots_target ?? DEFAULT_SETTINGS.displaySlotsTarget),
+    eventsTarget: Number(row.events_target ?? DEFAULT_SETTINGS.eventsTarget),
+    kebabTarget: Number(row.kebab_target ?? DEFAULT_SETTINGS.kebabTarget),
+    mascotTarget: Number(row.mascot_target ?? DEFAULT_SETTINGS.mascotTarget),
+    blogTarget: Number(row.blog_target ?? DEFAULT_SETTINGS.blogTarget),
+    socialTarget: Number(row.social_target ?? DEFAULT_SETTINGS.socialTarget),
+    adBudget: Number(row.ad_budget ?? DEFAULT_SETTINGS.adBudget),
+    totalMarketingBudget: Number(row.total_marketing_budget ?? DEFAULT_SETTINGS.totalMarketingBudget)
+  };
+}
+
 export function useDashboardData(user: AuthUser | null, userRole: UserRole | null | undefined) {
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState(() => createInitialDashboardData(buildDashboardAccess(userRole)));
@@ -112,7 +130,9 @@ export function useDashboardData(user: AuthUser | null, userRole: UserRole | nul
 
     const registerStream = (
       enabled: boolean,
-      subscribe: (settle: () => void) => () => void
+      streamName: string,
+      tables: string[],
+      load: () => Promise<void>
     ) => {
       if (!enabled) {
         return;
@@ -131,214 +151,223 @@ export function useDashboardData(user: AuthUser | null, userRole: UserRole | nul
         }
       };
 
-      unsubscribers.push(subscribe(settle));
+      const run = async () => {
+        try {
+          await load();
+        } catch (error) {
+          console.error(`${streamName} dashboard query error:`, error);
+        } finally {
+          settle();
+        }
+      };
+
+      void run();
+      tables.forEach((table) => {
+        unsubscribers.push(subscribeToTable(`dashboard-${streamName}-${table}`, table, () => {
+          void run();
+        }));
+      });
     };
 
-    registerStream(access.settings, (settle) =>
-      onSnapshot(doc(db, 'settings', 'globals'), (snap) => {
-        if (snap.exists()) {
-          setData((prev) => ({ ...prev, settings: snap.data() as any }));
-        }
-        settle();
-      }, (error) => {
-        console.error('Settings snapshot error:', error);
-        settle();
-      })
-    );
+    registerStream(access.settings, 'settings', ['settings'], async () => {
+      const { data: settingsRow, error } = await supabase
+        .from('settings')
+        .select('*')
+        .eq('key', 'globals')
+        .maybeSingle();
 
-    registerStream(access.outlets, (settle) =>
-      onSnapshot(collection(db, 'outlets'), (snap) => {
-        const list = snap.docs.map((itemDoc) => ({ id: itemDoc.id, ...itemDoc.data() }));
-        setData((prev) => ({ ...prev, outlets: list }));
-        settle();
-      }, (error) => {
-        console.error('Outlets snapshot error:', error);
-        settle();
-      })
-    );
+      if (error) throw error;
+      setData((prev) => ({ ...prev, settings: normalizeSettings(settingsRow) }));
+    });
 
-    registerStream(access.campaigns, (settle) =>
-      onSnapshot(collection(db, 'campaigns'), (snap) => {
-        let activeCount = 0;
-        let budgetUsed = 0;
-        const list: any[] = [];
-        snap.forEach((itemDoc) => {
-          const campaign = { id: itemDoc.id, ...itemDoc.data() } as any;
-          list.push(campaign);
-          if (campaign.status === 'Active') activeCount++;
-          if (campaign.budget) budgetUsed += Number(campaign.budget);
+    registerStream(access.outlets, 'outlets', ['outlets'], async () => {
+      const { data: outlets, error } = await supabase
+        .from('outlets')
+        .select('*');
+
+      if (error) throw error;
+      setData((prev) => ({ ...prev, outlets: outlets || [] }));
+    });
+
+    registerStream(access.campaigns, 'campaigns', ['campaigns'], async () => {
+      const { data: campaigns, error } = await supabase
+        .from('campaigns')
+        .select('*');
+
+      if (error) throw error;
+
+      let activeCount = 0;
+      let budgetUsed = 0;
+      const list = campaigns || [];
+      list.forEach((campaign: any) => {
+        if (campaign.status === 'Active') activeCount++;
+        budgetUsed += Number(campaign.budget || 0);
+      });
+
+      setData((prev) => ({ ...prev, campaigns: { list, activeCount, budgetUsed } }));
+    });
+
+    registerStream(access.partnerships, 'partnerships', ['partnerships'], async () => {
+      const { data: partnerships, error } = await supabase
+        .from('partnerships')
+        .select('*');
+
+      if (error) throw error;
+
+      let activeCount = 0;
+      let distributed = 0;
+      let redeemed = 0;
+      (partnerships || []).forEach((partnership: any) => {
+        if (partnership.stage === 'Active') activeCount++;
+        distributed += Number(partnership.vouchers_allocated || 0);
+        redeemed += Number(partnership.vouchers_redeemed || 0);
+      });
+
+      setData((prev) => ({ ...prev, partnerships: { activeCount, distributed, redeemed } }));
+    });
+
+    registerStream(access.events, 'events', ['events'], async () => {
+      const { data: events, error } = await supabase
+        .from('events')
+        .select('*');
+
+      if (error) throw error;
+
+      let joined = 0;
+      let awaiting = 0;
+      let sales = 0;
+      const mapped: any[] = [];
+
+      (events || []).forEach((event: any) => {
+        if (event.decision_status === 'Approved' || event.decision_status === 'Completed') joined++;
+        if (event.decision_status === 'Reviewing') awaiting++;
+        sales += Number(event.sales_generated || 0);
+        mapped.push({
+          outlet: event.outlet_name || '',
+          status: event.decision_status,
+          sales: Number(event.sales_generated || 0)
         });
-        setData((prev) => ({ ...prev, campaigns: { list, activeCount, budgetUsed } }));
-        settle();
-      }, (error) => {
-        console.error('Campaigns snapshot error:', error);
-        settle();
-      })
-    );
+      });
 
-    registerStream(access.partnerships, (settle) =>
-      onSnapshot(collection(db, 'partnerships'), (snap) => {
-        let activeCount = 0;
-        let distributed = 0;
-        let redeemed = 0;
-        snap.forEach((itemDoc) => {
-          const partnership = itemDoc.data();
-          if (partnership.partnershipStage === 'Active' || partnership.stage === 'Active') activeCount++;
-          distributed += Number(partnership.vouchersAllocated || 0);
-          redeemed += Number(partnership.vouchersRedeemed || 0);
+      setData((prev) => ({ ...prev, events: { joined, awaiting, sales, mapped } }));
+    });
+
+    registerStream(access.mallDisplays, 'mall-displays', ['mall_displays'], async () => {
+      const { data: displays, error } = await supabase
+        .from('mall_displays')
+        .select('*');
+
+      if (error) throw error;
+
+      let activeCount = 0;
+      let pending = 0;
+      const mapped: any[] = [];
+
+      (displays || []).forEach((display: any) => {
+        if (display.approval_status === 'Approved' || display.current_status === 'Installed' || display.design_status === 'Approved') activeCount++;
+        if (display.approval_status === 'Pending' || display.approval_status === 'Pending approval') pending++;
+        mapped.push({
+          outlet: display.outlet_name || '',
+          pending: display.approval_status === 'Pending' || display.approval_status === 'Pending approval'
         });
-        setData((prev) => ({ ...prev, partnerships: { activeCount, distributed, redeemed } }));
-        settle();
-      }, (error) => {
-        console.error('Partnerships snapshot error:', error);
-        settle();
-      })
-    );
+      });
 
-    registerStream(access.events, (settle) =>
-      onSnapshot(collection(db, 'events'), (snap) => {
-        let joined = 0;
-        let awaiting = 0;
-        let sales = 0;
-        const mapped: any[] = [];
-        snap.forEach((itemDoc) => {
-          const event = itemDoc.data();
-          if (event.decisionStatus === 'Approved' || event.decisionStatus === 'Completed') joined++;
-          if (event.decisionStatus === 'Reviewing') awaiting++;
-          sales += Number(event.salesGenerated || 0);
-          mapped.push({ outlet: event.outlet, status: event.decisionStatus, sales: Number(event.salesGenerated || 0) });
-        });
-        setData((prev) => ({ ...prev, events: { joined, awaiting, sales, mapped } }));
-        settle();
-      }, (error) => {
-        console.error('Events snapshot error:', error);
-        settle();
-      })
-    );
+      setData((prev) => ({ ...prev, mallDisplays: { activeCount, pending, mapped } }));
+    });
 
-    registerStream(access.mallDisplays, (settle) =>
-      onSnapshot(collection(db, 'mall_displays'), (snap) => {
-        let activeCount = 0;
-        let pending = 0;
-        const mapped: any[] = [];
-        snap.forEach((itemDoc) => {
-          const display = itemDoc.data();
-          if (display.approvalStatus === 'Approved' || display.currentStatus === 'Installed' || display.status === 'Approved' || display.designStatus === 'Approved') activeCount++;
-          if (display.approvalStatus === 'Pending' || display.approvalStatus === 'Pending approval') pending++;
-          mapped.push({ outlet: display.outlet, pending: display.approvalStatus === 'Pending' || display.approvalStatus === 'Pending approval' });
-        });
-        setData((prev) => ({ ...prev, mallDisplays: { activeCount, pending, mapped } }));
-        settle();
-      }, (error) => {
-        console.error('Mall displays snapshot error:', error);
-        settle();
-      })
-    );
+    registerStream(access.social, 'social', ['social_posts'], async () => {
+      const { data: posts, error } = await supabase
+        .from('social_posts')
+        .select('*');
 
-    registerStream(access.social, (settle) =>
-      onSnapshot(collection(db, 'social_posts'), (snap) => {
-        let published = 0;
-        snap.forEach((itemDoc) => {
-          const post = itemDoc.data();
-          if (post.productionStatus === 'Published' || post.status === 'Published') published++;
-        });
-        setData((prev) => ({ ...prev, social: { published } }));
-        settle();
-      }, (error) => {
-        console.error('Social posts snapshot error:', error);
-        settle();
-      })
-    );
+      if (error) throw error;
 
-    registerStream(access.paidAds, (settle) =>
-      onSnapshot(collection(db, 'paid_ads'), (snap) => {
-        let spend = 0;
-        const list: any[] = [];
-        snap.forEach((itemDoc) => {
-          const ad = itemDoc.data();
-          spend += Number(ad.spend || 0);
-          list.push(ad);
-        });
-        setData((prev) => ({ ...prev, paidAds: { spend, list } }));
-        settle();
-      }, (error) => {
-        console.error('Paid ads snapshot error:', error);
-        settle();
-      })
-    );
+      const published = (posts || []).filter((post: any) => post.status === 'Published').length;
+      setData((prev) => ({ ...prev, social: { published } }));
+    });
 
-    registerStream(access.adHoc, (settle) =>
-      onSnapshot(collection(db, 'ad_hoc_tasks'), (snap) => {
-        let overdue = 0;
-        let designs = 0;
-        let emergencies = 0;
-        const list: any[] = [];
-        const today = new Date().toISOString().split('T')[0];
+    registerStream(access.paidAds, 'paid-ads', ['paid_ads'], async () => {
+      const { data: ads, error } = await supabase
+        .from('paid_ads')
+        .select('*');
 
-        snap.forEach((itemDoc) => {
-          const task = { id: itemDoc.id, ...itemDoc.data() } as any;
-          list.push(task);
-          const isOverdue = task.status !== 'Solved' && task.dueDate && task.dueDate < today;
-          if (task.status === 'Overdue' || isOverdue) overdue++;
-          if (task.status !== 'Solved' && (task.category === 'Design Needs' || task.category === 'Missing Assets')) designs++;
-          if (task.status !== 'Solved' && (task.priority === 'Emergency' || task.category === 'Emergency Issues')) emergencies++;
-        });
+      if (error) throw error;
 
-        setData((prev) => ({ ...prev, adHoc: { list, overdue, designs, emergencies } }));
-        settle();
-      }, (error) => {
-        console.error('Ad hoc tasks snapshot error:', error);
-        settle();
-      })
-    );
+      let spend = 0;
+      const list = ads || [];
+      list.forEach((ad: any) => {
+        spend += Number(ad.spend || 0);
+      });
 
-    registerStream(access.mascots, (settle) =>
-      onSnapshot(collection(db, 'mascot_schedule'), (snap) => {
-        let appearances = 0;
-        snap.forEach((itemDoc) => {
-          const scheduleItem = itemDoc.data();
-          if (scheduleItem.status === 'Completed' || scheduleItem.status === 'Approved') appearances++;
-        });
-        setData((prev) => ({ ...prev, mascots: { appearances } }));
-        settle();
-      }, (error) => {
-        console.error('Mascot schedule snapshot error:', error);
-        settle();
-      })
-    );
+      setData((prev) => ({ ...prev, paidAds: { spend, list } }));
+    });
 
-    registerStream(access.blogs, (settle) =>
-      onSnapshot(collection(db, 'blog_outreach'), (snap) => {
-        let published = 0;
-        snap.forEach((itemDoc) => {
-          if (itemDoc.data().outreachStatus === 'Published') published++;
-        });
-        setData((prev) => ({ ...prev, blogs: { published } }));
-        settle();
-      }, (error) => {
-        console.error('Blog outreach snapshot error:', error);
-        settle();
-      })
-    );
+    registerStream(access.adHoc, 'ad-hoc', ['ad_hoc_tasks'], async () => {
+      const { data: tasks, error } = await supabase
+        .from('ad_hoc_tasks')
+        .select('*');
 
-    registerStream(access.promos, (settle) =>
-      onSnapshot(collection(db, 'delivery_promos'), (snap) => {
-        let sales = 0;
-        let spend = 0;
-        const list: any[] = [];
-        snap.forEach((itemDoc) => {
-          const promo = itemDoc.data();
-          sales += Number(promo.salesGenerated || 0);
-          spend += Number(promo.spend || 0);
-          list.push(promo);
-        });
-        setData((prev) => ({ ...prev, promos: { sales, spend, list } }));
-        settle();
-      }, (error) => {
-        console.error('Delivery promos snapshot error:', error);
-        settle();
-      })
-    );
+      if (error) throw error;
+
+      let overdue = 0;
+      let designs = 0;
+      let emergencies = 0;
+      const list = tasks || [];
+      const today = new Date().toISOString().split('T')[0];
+
+      list.forEach((task: any) => {
+        const dueDate = task.due_date || task.dueDate;
+        const isOverdue = task.status !== 'Solved' && dueDate && dueDate < today;
+        if (task.status === 'Overdue' || isOverdue) overdue++;
+        if (task.status !== 'Solved' && (task.category === 'Design Needs' || task.category === 'Missing Assets')) designs++;
+        if (task.status !== 'Solved' && (task.priority === 'Emergency' || task.category === 'Emergency Issues')) emergencies++;
+      });
+
+      setData((prev) => ({ ...prev, adHoc: { list, overdue, designs, emergencies } }));
+    });
+
+    registerStream(access.mascots, 'mascots', ['mascot_schedule'], async () => {
+      const { data: schedule, error } = await supabase
+        .from('mascot_schedule')
+        .select('*');
+
+      if (error) throw error;
+
+      const appearances = (schedule || []).filter((scheduleItem: any) =>
+        scheduleItem.status === 'Completed' || scheduleItem.status === 'Approved'
+      ).length;
+
+      setData((prev) => ({ ...prev, mascots: { appearances } }));
+    });
+
+    registerStream(access.blogs, 'blogs', ['blog_outreach'], async () => {
+      const { data: outreach, error } = await supabase
+        .from('blog_outreach')
+        .select('*');
+
+      if (error) throw error;
+
+      const published = (outreach || []).filter((item: any) => item.status === 'Published').length;
+      setData((prev) => ({ ...prev, blogs: { published } }));
+    });
+
+    registerStream(access.promos, 'promos', ['delivery_promos'], async () => {
+      const { data: promos, error } = await supabase
+        .from('delivery_promos')
+        .select('*');
+
+      if (error) throw error;
+
+      let sales = 0;
+      let spend = 0;
+      const list = promos || [];
+      list.forEach((promo: any) => {
+        sales += Number(promo.sales || 0);
+        spend += Number(promo.spend || 0);
+      });
+
+      setData((prev) => ({ ...prev, promos: { sales, spend, list } }));
+    });
 
     return () => unsubscribers.forEach((unsubscribe) => unsubscribe());
   }, [user, userRole]);

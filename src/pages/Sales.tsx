@@ -1,17 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { Calendar, Download, DollarSign, Save, Upload } from 'lucide-react';
-import {
-  collection,
-  doc,
-  limit,
-  onSnapshot,
-  orderBy,
-  query,
-  serverTimestamp,
-  writeBatch
-} from 'firebase/firestore';
-import { db } from '../lib/firebase';
 import { useAuth } from '../lib/AuthContext';
+import { supabase } from '../lib/supabase';
+import { nowIso, subscribeToTable } from '../lib/supabaseData';
 
 const SALES_IMPORT_HEADERS = [
   'month_key',
@@ -143,29 +134,41 @@ export function Sales() {
       return;
     }
 
-    const unsubscribe = onSnapshot(collection(db, 'outlets'), (snapshot) => {
-      const nextOutlets = snapshot.docs
-        .map((outletDoc) => {
-          const outletData = outletDoc.data();
-          const outletName = typeof outletData.name === 'string' ? outletData.name.trim() : '';
+    const fetchOutlets = async () => {
+      const { data, error } = await supabase
+        .from('outlets')
+        .select('id, name')
+        .order('name', { ascending: true });
+
+      if (error) {
+        console.error('Error fetching outlets for sales import:', error);
+        setSalesImportFeedback({
+          tone: 'error',
+          message: 'Failed to load outlets.'
+        });
+        return;
+      }
+
+      const nextOutlets = (data || [])
+        .map((outlet) => {
+          const outletName = typeof outlet.name === 'string' ? outlet.name.trim() : '';
           if (!outletName) {
             return null;
           }
 
           return {
-            id: outletDoc.id,
+            id: outlet.id,
             name: outletName
           } satisfies OutletOption;
         })
         .filter((outlet): outlet is OutletOption => outlet !== null);
 
       setOutlets(nextOutlets);
-    }, (error) => {
-      console.error('Error fetching outlets for sales import:', error);
-      setSalesImportFeedback({
-        tone: 'error',
-        message: 'Failed to load outlets.'
-      });
+    };
+
+    void fetchOutlets();
+    const unsubscribe = subscribeToTable('sales-outlets', 'outlets', () => {
+      void fetchOutlets();
     });
 
     return () => unsubscribe();
@@ -179,19 +182,28 @@ export function Sales() {
     }
 
     setLoadingBudgetHistory(true);
-    const budgetHistoryQuery = query(
-      collection(db, 'budgets'),
-      orderBy('month_key', 'desc'),
-      limit(12)
-    );
+    const fetchBudgetHistory = async () => {
+      const { data, error } = await supabase
+        .from('budgets')
+        .select('id, month_key, sales_rollup_total, marketing_budget_total, budget_rate, locked')
+        .order('month_key', { ascending: false })
+        .limit(12);
 
-    const unsubscribe = onSnapshot(budgetHistoryQuery, (snapshot) => {
-      const normalizedBudgetHistory = snapshot.docs
-        .map((budgetDoc) => {
-          const budgetData = budgetDoc.data();
+      if (error) {
+        console.error('Error fetching budget history:', error);
+        setSalesImportFeedback({
+          tone: 'error',
+          message: 'Failed to load history.'
+        });
+        setLoadingBudgetHistory(false);
+        return;
+      }
+
+      const normalizedBudgetHistory = (data || [])
+        .map((budgetData) => {
           return {
-            id: budgetDoc.id,
-            month_key: typeof budgetData.month_key === 'string' ? budgetData.month_key : budgetDoc.id,
+            id: budgetData.id,
+            month_key: typeof budgetData.month_key === 'string' ? budgetData.month_key : budgetData.id,
             sales_rollup_total: typeof budgetData.sales_rollup_total === 'number' ? budgetData.sales_rollup_total : 0,
             marketing_budget_total: typeof budgetData.marketing_budget_total === 'number' ? budgetData.marketing_budget_total : 0,
             budget_rate: typeof budgetData.budget_rate === 'number' ? budgetData.budget_rate : 0.02,
@@ -202,13 +214,11 @@ export function Sales() {
 
       setBudgetHistory(normalizedBudgetHistory);
       setLoadingBudgetHistory(false);
-    }, (error) => {
-      console.error('Error fetching budget history:', error);
-      setSalesImportFeedback({
-        tone: 'error',
-        message: 'Failed to load history.'
-      });
-      setLoadingBudgetHistory(false);
+    };
+
+    void fetchBudgetHistory();
+    const unsubscribe = subscribeToTable('sales-budgets', 'budgets', () => {
+      void fetchBudgetHistory();
     });
 
     return () => unsubscribe();
@@ -327,13 +337,12 @@ export function Sales() {
   };
 
   const handleCommitSalesImport = async () => {
-    if (!user || !canManageSales || !salesImportPreview || parsedSalesImportRows.length === 0) return;
+    if (!user || !userData || !canManageSales || !salesImportPreview || parsedSalesImportRows.length === 0) return;
 
     setIsImportingSales(true);
     setSalesImportFeedback(null);
 
     try {
-      const batch = writeBatch(db);
       const csvBatchId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
         ? crypto.randomUUID()
         : `sales-import-${Date.now()}`;
@@ -363,8 +372,8 @@ export function Sales() {
         monthlyRollupMap.set(row.month_key, roundCurrency(currentMonthSales + row.total_sales));
       });
 
-      salesDocMap.forEach((salesRow, salesDocId) => {
-        batch.set(doc(db, 'sales', salesDocId), {
+      const timestamp = nowIso();
+      const salesPayload = Array.from(salesDocMap.values()).map((salesRow) => ({
           month_key: salesRow.month_key,
           outlet_id: salesRow.outlet_id,
           outlet_name: salesRow.outlet_name,
@@ -383,30 +392,51 @@ export function Sales() {
           ),
           source_file_name: salesImportPreview.fileName,
           source_batch_id: csvBatchId,
-          imported_by_uid: user.uid,
-          imported_at: serverTimestamp(),
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp()
-        });
-      });
+          imported_by_user_id: userData.id,
+          imported_at: timestamp,
+          created_at: timestamp,
+          updated_at: timestamp
+      }));
 
-      monthlyRollupMap.forEach((salesRollupTotal, monthKey) => {
-        batch.set(doc(db, 'budgets', monthKey), {
+      const { error: salesError } = await supabase
+        .from('sales')
+        .upsert(salesPayload, { onConflict: 'month_key,outlet_id' });
+
+      if (salesError) throw salesError;
+
+      const budgetPayload = Array.from(monthlyRollupMap.entries()).map(([monthKey, salesRollupTotal]) => ({
           month_key: monthKey,
           sales_rollup_total: salesRollupTotal,
           budget_rate: 0.02,
           marketing_budget_total: roundCurrency(salesRollupTotal * 0.02),
           locked: true,
-          locked_at: serverTimestamp(),
-          source_batch_ids: [csvBatchId],
+          locked_at: timestamp,
           source_file_name: salesImportPreview.fileName,
-          calculated_by_uid: user.uid,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp()
-        });
-      });
+          calculated_by_user_id: userData.id,
+          created_at: timestamp,
+          updated_at: timestamp
+      }));
 
-      await batch.commit();
+      const { data: budgets, error: budgetError } = await supabase
+        .from('budgets')
+        .upsert(budgetPayload, { onConflict: 'month_key' })
+        .select('id, month_key');
+
+      if (budgetError) throw budgetError;
+
+      const budgetSourcePayload = (budgets || []).map((budget) => ({
+        budget_id: budget.id,
+        source_batch_id: csvBatchId,
+        created_at: timestamp
+      }));
+
+      if (budgetSourcePayload.length > 0) {
+        const { error: sourceError } = await supabase
+          .from('budget_source_batches')
+          .upsert(budgetSourcePayload, { onConflict: 'budget_id,source_batch_id' });
+
+        if (sourceError) throw sourceError;
+      }
 
       setParsedSalesImportRows([]);
       setSalesImportPreview(null);

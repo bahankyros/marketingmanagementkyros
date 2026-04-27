@@ -1,10 +1,36 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Handshake, Plus, Building, Target, Percent, Phone, ArrowUpRight, CheckCircle2, X } from 'lucide-react';
-import { collection, query, orderBy, onSnapshot, addDoc, doc, updateDoc, serverTimestamp } from 'firebase/firestore';
-import { db } from '../lib/firebase';
 import { useAuth } from '../lib/AuthContext';
 import { useCampaigns } from '../lib/useCampaigns';
+import { supabase } from '../lib/supabase';
+import { nowIso, subscribeToTable, toNullableDate, toNullableUuid, toNumber } from '../lib/supabaseData';
+
+function normalizePartnership(row: any) {
+  return {
+    id: row.id,
+    companyName: row.company_name || '',
+    industry: row.industry || '',
+    contactPerson: row.contact_person || '',
+    position: row.position || '',
+    phone: row.phone || '',
+    email: row.email || '',
+    leadSource: row.lead_source || '',
+    stage: row.stage || 'Prospect',
+    voucherType: row.voucher_type || 'Digital',
+    vouchersAllocated: toNumber(row.vouchers_allocated),
+    vouchersRedeemed: toNumber(row.vouchers_redeemed),
+    revenueGenerated: toNumber(row.revenue_generated),
+    costPerRedemption: toNumber(row.cost_per_redemption),
+    targetDate: row.target_date || '',
+    lastContactedDate: row.last_contacted_date || '',
+    campaignId: row.campaign_id || '',
+    ownerId: row.owner_user_id || '',
+    notes: row.notes || '',
+    createdAt: row.created_at || '',
+    updatedAt: row.updated_at || ''
+  };
+}
 
 export function Partnerships() {
   const { user, userData } = useAuth();
@@ -36,29 +62,62 @@ export function Partnerships() {
 
   useEffect(() => {
     if (!user) return;
-    const q = query(collection(db, 'partnerships'), orderBy('createdAt', 'desc'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setPartnerships(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    const fetchPartnerships = async () => {
+      const { data, error } = await supabase
+        .from('partnerships')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error("Error fetching partnerships:", error);
+        setLoading(false);
+        return;
+      }
+
+      setPartnerships((data || []).map(normalizePartnership));
       setLoading(false);
+    };
+
+    void fetchPartnerships();
+    const unsubscribe = subscribeToTable('partnerships-page', 'partnerships', () => {
+      void fetchPartnerships();
     });
+
     return () => unsubscribe();
   }, [user]);
 
   const handleCreateSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!user || !canManagePartnerships) return;
+    if (!user || !userData || !canManagePartnerships) return;
     try {
-      await addDoc(collection(db, 'partnerships'), {
-        ...formData,
-        vouchersAllocated: Number(formData.vouchersAllocated) || 0,
-        vouchersRedeemed: 0,
-        revenueGenerated: 0,
-        costPerRedemption: 0,
-        ownerId: user.uid,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-        lastContactedDate: new Date().toISOString().split('T')[0]
-      });
+      const timestamp = nowIso();
+      const { error } = await supabase
+        .from('partnerships')
+        .insert({
+          company_name: formData.companyName.trim(),
+          industry: formData.industry.trim(),
+          contact_person: formData.contactPerson.trim(),
+          position: formData.position.trim(),
+          phone: formData.phone.trim(),
+          email: formData.email.trim(),
+          lead_source: formData.leadSource.trim(),
+          stage: formData.stage,
+          voucher_type: formData.voucherType,
+          vouchers_allocated: Number(formData.vouchersAllocated) || 0,
+          vouchers_redeemed: 0,
+          revenue_generated: 0,
+          cost_per_redemption: 0,
+          target_date: toNullableDate(formData.targetDate),
+          last_contacted_date: new Date().toISOString().split('T')[0],
+          campaign_id: toNullableUuid(formData.campaignId),
+          owner_user_id: userData.id,
+          notes: formData.notes.trim(),
+          created_at: timestamp,
+          updated_at: timestamp
+        });
+
+      if (error) throw error;
+
       setIsCreating(false);
       setFormData({ companyName: '', industry: '', contactPerson: '', position: '', phone: '', email: '', leadSource: '', stage: 'Prospect', voucherType: 'Digital', vouchersAllocated: '', targetDate: '', campaignId: '', notes: '' });
     } catch (error) {
@@ -71,15 +130,32 @@ export function Partnerships() {
     e.preventDefault();
     if (!editingPartnership || !canManagePartnerships) return;
     try {
-      const pRef = doc(db, 'partnerships', editingPartnership.id);
-      await updateDoc(pRef, {
-        ...editingPartnership,
-        vouchersAllocated: Number(editingPartnership.vouchersAllocated) || 0,
-        vouchersRedeemed: Number(editingPartnership.vouchersRedeemed) || 0,
-        revenueGenerated: Number(editingPartnership.revenueGenerated) || 0,
-        costPerRedemption: Number(editingPartnership.costPerRedemption) || 0,
-        updatedAt: serverTimestamp()
-      });
+      const { error } = await supabase
+        .from('partnerships')
+        .update({
+          company_name: editingPartnership.companyName || '',
+          industry: editingPartnership.industry || '',
+          contact_person: editingPartnership.contactPerson || '',
+          position: editingPartnership.position || '',
+          phone: editingPartnership.phone || '',
+          email: editingPartnership.email || '',
+          lead_source: editingPartnership.leadSource || '',
+          stage: editingPartnership.stage || 'Prospect',
+          voucher_type: editingPartnership.voucherType || 'Digital',
+          vouchers_allocated: Number(editingPartnership.vouchersAllocated) || 0,
+          vouchers_redeemed: Number(editingPartnership.vouchersRedeemed) || 0,
+          revenue_generated: Number(editingPartnership.revenueGenerated) || 0,
+          cost_per_redemption: Number(editingPartnership.costPerRedemption) || 0,
+          target_date: toNullableDate(editingPartnership.targetDate),
+          last_contacted_date: toNullableDate(editingPartnership.lastContactedDate),
+          campaign_id: toNullableUuid(editingPartnership.campaignId),
+          notes: editingPartnership.notes || '',
+          updated_at: nowIso()
+        })
+        .eq('id', editingPartnership.id);
+
+      if (error) throw error;
+
       setEditingPartnership(null);
     } catch (error) {
       console.error("Error updating partnership:", error);
@@ -281,7 +357,7 @@ export function Partnerships() {
                       <label className="text-sm font-medium text-neutral-700">Campaign</label>
                       <select value={formData.campaignId} onChange={e=>setFormData({...formData, campaignId: e.target.value})} className="w-full p-2 bg-neutral-50 border border-neutral-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500">
                         <option value="">None / standalone</option>
-                        {campaigns.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+                        {campaigns.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                       </select>
                     </div>
                     <div className="grid grid-cols-2 gap-3">
@@ -352,7 +428,7 @@ export function Partnerships() {
                      <label className="text-sm font-medium text-neutral-700">Campaign</label>
                      <select value={editingPartnership.campaignId || ''} onChange={e=>setEditingPartnership({...editingPartnership, campaignId: e.target.value})} className="w-full p-2 bg-neutral-50 border border-neutral-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500">
                         <option value="">None / standalone</option>
-                        {campaigns.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+                        {campaigns.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                      </select>
                   </div>
                   

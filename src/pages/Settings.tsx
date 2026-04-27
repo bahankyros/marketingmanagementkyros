@@ -5,10 +5,9 @@ import {
   Target, Handshake, MonitorPlay, Calendar, Gift, 
   Smile, BookOpen, Share2, DollarSign, Plus, Trash2, MapPin, CheckSquare, Pencil, X, AlertTriangle, Users, Download, Upload
 } from 'lucide-react';
-import { doc, getDoc, setDoc, serverTimestamp, collection, onSnapshot, addDoc, deleteDoc, updateDoc, query, orderBy, writeBatch, limit } from 'firebase/firestore';
-import { db } from '../lib/firebase';
 import { useAuth } from '../lib/AuthContext';
 import { supabase } from '../lib/supabase';
+import { subscribeToTable } from '../lib/supabaseData';
 
 const CHECKLIST_TEMPLATE_TYPES = ['Digital', 'Physical', 'Hybrid'] as const;
 const CHECKLIST_TEMPLATE_CATEGORIES = [
@@ -186,6 +185,20 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function normalizeGlobalSettings(row: any) {
+  return {
+    partnershipTarget: Number(row?.partnership_target ?? 30),
+    displaySlotsTarget: Number(row?.display_slots_target ?? 18),
+    eventsTarget: Number(row?.events_target ?? 2),
+    kebabTarget: Number(row?.kebab_target ?? 50),
+    mascotTarget: Number(row?.mascot_target ?? 4),
+    blogTarget: Number(row?.blog_target ?? 10),
+    socialTarget: Number(row?.social_target ?? 15),
+    adBudget: Number(row?.ad_budget ?? 5000),
+    totalMarketingBudget: Number(row?.total_marketing_budget ?? 50000)
+  };
+}
+
 function toNullableUuid(value: string) {
   const normalized = value.trim();
   return normalized || null;
@@ -287,10 +300,18 @@ export function Settings() {
     // Fetch Globals
     const fetchGlobals = async () => {
       try {
-        const docRef = doc(db, 'settings', 'globals');
-        const docSnap = await getDoc(docRef);
-        if (docSnap.exists()) {
-          setGlobals(docSnap.data() as any);
+        const { data, error } = await supabase
+          .from('settings')
+          .select('*')
+          .eq('key', 'globals')
+          .maybeSingle();
+
+        if (error) {
+          throw error;
+        }
+
+        if (data) {
+          setGlobals(normalizeGlobalSettings(data));
         }
       } catch (err) {
         console.error("Error fetching globals:", err);
@@ -323,12 +344,19 @@ export function Settings() {
         void fetchOutlets();
       })
       .subscribe();
+    const globalsChannel = supabase
+      .channel('settings-globals')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'settings' }, () => {
+        void fetchGlobals();
+      })
+      .subscribe();
 
     fetchGlobals();
     void fetchOutlets();
 
     return () => {
       void supabase.removeChannel(outletsChannel);
+      void supabase.removeChannel(globalsChannel);
     };
   }, [user]);
 
@@ -340,17 +368,45 @@ export function Settings() {
     }
 
     setLoadingTemplates(true);
-    const q = query(collection(db, 'checklistTemplates'), orderBy('updatedAt', 'desc'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setChecklistTemplates(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    const fetchChecklistTemplates = async () => {
+      const { data, error } = await supabase
+        .from('checklist_templates')
+        .select('id, name, type, category, checklist_template_items(task, sort_order)')
+        .order('updated_at', { ascending: false });
+
+      if (error) {
+        console.error("Error fetching checklist templates:", error);
+        setLoadingTemplates(false);
+        setTemplateFeedback({ tone: 'error', message: 'Failed to load templates.' });
+        return;
+      }
+
+      setChecklistTemplates((data || []).map((template: any) => ({
+        id: template.id,
+        name: template.name,
+        type: template.type,
+        category: template.category,
+        tasks: Array.isArray(template.checklist_template_items)
+          ? [...template.checklist_template_items]
+              .sort((left: any, right: any) => Number(left.sort_order || 0) - Number(right.sort_order || 0))
+              .map((item: any) => item.task)
+          : []
+      })));
       setLoadingTemplates(false);
-    }, (err) => {
-      console.error("Error fetching checklist templates:", err);
-      setLoadingTemplates(false);
-      setTemplateFeedback({ tone: 'error', message: 'Failed to load templates.' });
+    };
+
+    void fetchChecklistTemplates();
+    const unsubscribeTemplates = subscribeToTable('settings-checklist-templates', 'checklist_templates', () => {
+      void fetchChecklistTemplates();
+    });
+    const unsubscribeTemplateItems = subscribeToTable('settings-checklist-template-items', 'checklist_template_items', () => {
+      void fetchChecklistTemplates();
     });
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribeTemplates();
+      unsubscribeTemplateItems();
+    };
   }, [user, canViewChecklistTemplates]);
 
   useEffect(() => {
@@ -406,19 +462,28 @@ export function Settings() {
     }
 
     setLoadingBudgetHistory(true);
-    const budgetHistoryQuery = query(
-      collection(db, 'budgets'),
-      orderBy('month_key', 'desc'),
-      limit(12)
-    );
+    const fetchBudgetHistory = async () => {
+      const { data, error } = await supabase
+        .from('budgets')
+        .select('id, month_key, sales_rollup_total, marketing_budget_total, budget_rate, locked')
+        .order('month_key', { ascending: false })
+        .limit(12);
 
-    const unsubscribe = onSnapshot(budgetHistoryQuery, (snapshot) => {
-      const normalizedBudgetHistory = snapshot.docs
-        .map((budgetDoc) => {
-          const budgetData = budgetDoc.data();
+      if (error) {
+        console.error('Error fetching budget history:', error);
+        setSalesImportFeedback({
+          tone: 'error',
+          message: 'Failed to load history.'
+        });
+        setLoadingBudgetHistory(false);
+        return;
+      }
+
+      const normalizedBudgetHistory = (data || [])
+        .map((budgetData) => {
           return {
-            id: budgetDoc.id,
-            month_key: typeof budgetData.month_key === 'string' ? budgetData.month_key : budgetDoc.id,
+            id: budgetData.id,
+            month_key: typeof budgetData.month_key === 'string' ? budgetData.month_key : budgetData.id,
             sales_rollup_total: typeof budgetData.sales_rollup_total === 'number' ? budgetData.sales_rollup_total : 0,
             marketing_budget_total: typeof budgetData.marketing_budget_total === 'number' ? budgetData.marketing_budget_total : 0,
             budget_rate: typeof budgetData.budget_rate === 'number' ? budgetData.budget_rate : 0.02,
@@ -429,13 +494,11 @@ export function Settings() {
 
       setBudgetHistory(normalizedBudgetHistory);
       setLoadingBudgetHistory(false);
-    }, (error) => {
-      console.error('Error fetching budget history:', error);
-      setSalesImportFeedback({
-        tone: 'error',
-        message: 'Failed to load history.'
-      });
-      setLoadingBudgetHistory(false);
+    };
+
+    void fetchBudgetHistory();
+    const unsubscribe = subscribeToTable('settings-budgets', 'budgets', () => {
+      void fetchBudgetHistory();
     });
 
     return () => unsubscribe();
@@ -445,11 +508,25 @@ export function Settings() {
     if (!user || !canManageSettings) return;
     setSaving(true);
     try {
-      await setDoc(doc(db, 'settings', 'globals'), {
-        ...globals,
-        updatedAt: serverTimestamp(),
-        updatedBy: user.uid
-      });
+      const { error } = await supabase
+        .from('settings')
+        .upsert({
+          key: 'globals',
+          partnership_target: Number(globals.partnershipTarget) || 0,
+          display_slots_target: Number(globals.displaySlotsTarget) || 0,
+          events_target: Number(globals.eventsTarget) || 0,
+          kebab_target: Number(globals.kebabTarget) || 0,
+          mascot_target: Number(globals.mascotTarget) || 0,
+          blog_target: Number(globals.blogTarget) || 0,
+          social_target: Number(globals.socialTarget) || 0,
+          ad_budget: Number(globals.adBudget) || 0,
+          total_marketing_budget: Number(globals.totalMarketingBudget) || 0,
+          updated_by_user_id: userData?.id || null,
+          updated_at: nowIso()
+        }, { onConflict: 'key' });
+
+      if (error) throw error;
+
       alert('Settings saved.');
     } catch (error) {
       console.error('Error saving globals:', error);
@@ -857,13 +934,12 @@ export function Settings() {
   };
 
   const handleCommitSalesImport = async () => {
-    if (!user || !canManageSettings || !salesImportPreview || parsedSalesImportRows.length === 0) return;
+    if (!user || !userData || !canManageSettings || !salesImportPreview || parsedSalesImportRows.length === 0) return;
 
     setIsImportingSales(true);
     setSalesImportFeedback(null);
 
     try {
-      const batch = writeBatch(db);
       const csvBatchId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
         ? crypto.randomUUID()
         : `sales-import-${Date.now()}`;
@@ -895,8 +971,8 @@ export function Settings() {
         monthlyRollupMap.set(row.month_key, roundCurrency(currentMonthSales + row.total_sales));
       });
 
-      salesDocMap.forEach((salesRow, salesDocId) => {
-        const salesPayload = {
+      const timestamp = nowIso();
+      const salesPayload = Array.from(salesDocMap.values()).map((salesRow) => ({
           month_key: salesRow.month_key,
           outlet_id: salesRow.outlet_id,
           outlet_name: salesRow.outlet_name,
@@ -915,34 +991,51 @@ export function Settings() {
           ),
           source_file_name: salesImportPreview.fileName,
           source_batch_id: csvBatchId,
-          imported_by_uid: user.uid,
-          imported_at: serverTimestamp(),
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp()
-        };
+          imported_by_user_id: userData.id,
+          imported_at: timestamp,
+          created_at: timestamp,
+          updated_at: timestamp
+      }));
 
-        batch.set(doc(db, 'sales', salesDocId), salesPayload);
-      });
+      const { error: salesError } = await supabase
+        .from('sales')
+        .upsert(salesPayload, { onConflict: 'month_key,outlet_id' });
 
-      monthlyRollupMap.forEach((salesRollupTotal, monthKey) => {
-        const budgetPayload = {
+      if (salesError) throw salesError;
+
+      const budgetPayload = Array.from(monthlyRollupMap.entries()).map(([monthKey, salesRollupTotal]) => ({
           month_key: monthKey,
           sales_rollup_total: salesRollupTotal,
           budget_rate: 0.02,
           marketing_budget_total: roundCurrency(salesRollupTotal * 0.02),
           locked: true,
-          locked_at: serverTimestamp(),
-          source_batch_ids: [csvBatchId],
+          locked_at: timestamp,
           source_file_name: salesImportPreview.fileName,
-          calculated_by_uid: user.uid,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp()
-        };
+          calculated_by_user_id: userData.id,
+          created_at: timestamp,
+          updated_at: timestamp
+      }));
 
-        batch.set(doc(db, 'budgets', monthKey), budgetPayload);
-      });
+      const { data: budgets, error: budgetError } = await supabase
+        .from('budgets')
+        .upsert(budgetPayload, { onConflict: 'month_key' })
+        .select('id, month_key');
 
-      await batch.commit();
+      if (budgetError) throw budgetError;
+
+      const budgetSourcePayload = (budgets || []).map((budget) => ({
+        budget_id: budget.id,
+        source_batch_id: csvBatchId,
+        created_at: timestamp
+      }));
+
+      if (budgetSourcePayload.length > 0) {
+        const { error: sourceError } = await supabase
+          .from('budget_source_batches')
+          .upsert(budgetSourcePayload, { onConflict: 'budget_id,source_batch_id' });
+
+        if (sourceError) throw sourceError;
+      }
 
       setParsedSalesImportRows([]);
       setSalesImportPreview(null);
@@ -1025,24 +1118,65 @@ export function Settings() {
     setSavingTemplate(true);
     setTemplateFeedback(null);
     try {
+      const timestamp = nowIso();
       if (editingTemplateId) {
-        await updateDoc(doc(db, 'checklistTemplates', editingTemplateId), {
-          name,
-          type: templateForm.type,
-          category: templateForm.category,
-          tasks,
-          updatedAt: serverTimestamp()
-        });
+        const { error } = await supabase
+          .from('checklist_templates')
+          .update({
+            name,
+            type: templateForm.type,
+            category: templateForm.category,
+            updated_at: timestamp
+          })
+          .eq('id', editingTemplateId);
+
+        if (error) throw error;
+
+        const { error: deleteItemsError } = await supabase
+          .from('checklist_template_items')
+          .delete()
+          .eq('template_id', editingTemplateId);
+
+        if (deleteItemsError) throw deleteItemsError;
+
+        const { error: itemError } = await supabase
+          .from('checklist_template_items')
+          .insert(tasks.map((task, index) => ({
+            template_id: editingTemplateId,
+            task,
+            sort_order: index,
+            created_at: timestamp,
+            updated_at: timestamp
+          })));
+
+        if (itemError) throw itemError;
         setTemplateFeedback({ tone: 'success', message: 'Template updated.' });
       } else {
-        await addDoc(collection(db, 'checklistTemplates'), {
-          name,
-          type: templateForm.type,
-          category: templateForm.category,
-          tasks,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp()
-        });
+        const { data, error } = await supabase
+          .from('checklist_templates')
+          .insert({
+            name,
+            type: templateForm.type,
+            category: templateForm.category,
+            created_at: timestamp,
+            updated_at: timestamp
+          })
+          .select('id')
+          .single();
+
+        if (error) throw error;
+
+        const { error: itemError } = await supabase
+          .from('checklist_template_items')
+          .insert(tasks.map((task, index) => ({
+            template_id: data.id,
+            task,
+            sort_order: index,
+            created_at: timestamp,
+            updated_at: timestamp
+          })));
+
+        if (itemError) throw itemError;
         setTemplateFeedback({ tone: 'success', message: 'Template created.' });
       }
 
@@ -1060,7 +1194,13 @@ export function Settings() {
 
     setSavingTemplate(true);
     try {
-      await deleteDoc(doc(db, 'checklistTemplates', deletingTemplate.id));
+      const { error } = await supabase
+        .from('checklist_templates')
+        .delete()
+        .eq('id', deletingTemplate.id);
+
+      if (error) throw error;
+
       setTemplateFeedback({ tone: 'success', message: 'Template deleted.' });
       if (editingTemplateId === deletingTemplate.id) {
         resetTemplateForm();

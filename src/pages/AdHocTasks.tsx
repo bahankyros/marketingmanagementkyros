@@ -1,9 +1,24 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { LayoutList, Plus, AlertCircle, CheckCircle2, Circle, X } from 'lucide-react';
-import { collection, query, orderBy, onSnapshot, addDoc, doc, updateDoc, serverTimestamp } from 'firebase/firestore';
-import { db } from '../lib/firebase';
 import { useAuth } from '../lib/AuthContext';
+import { supabase } from '../lib/supabase';
+import { nowIso, subscribeToTable, toNullableDate } from '../lib/supabaseData';
+
+function normalizeAdHocTask(row: any) {
+  return {
+    id: row.id,
+    title: row.title || '',
+    category: row.category || 'Design Needs',
+    status: row.status || 'Open',
+    priority: row.priority || 'Normal',
+    dueDate: row.due_date || '',
+    notes: row.notes || '',
+    creatorId: row.creator_user_id || '',
+    createdAt: row.created_at || '',
+    updatedAt: row.updated_at || ''
+  };
+}
 
 export function AdHocTasks() {
   const { user, userData } = useAuth();
@@ -24,11 +39,27 @@ export function AdHocTasks() {
   });
 
   useEffect(() => {
-    const q = query(collection(db, 'ad_hoc_tasks'), orderBy('createdAt', 'desc'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setTasks(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    const fetchTasks = async () => {
+      const { data, error } = await supabase
+        .from('ad_hoc_tasks')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error("Error fetching tasks:", error);
+        setLoading(false);
+        return;
+      }
+
+      setTasks((data || []).map(normalizeAdHocTask));
       setLoading(false);
+    };
+
+    void fetchTasks();
+    const unsubscribe = subscribeToTable('ad-hoc-tasks-page', 'ad_hoc_tasks', () => {
+      void fetchTasks();
     });
+
     return () => unsubscribe();
   }, []);
 
@@ -36,12 +67,23 @@ export function AdHocTasks() {
     e.preventDefault();
     if (!user || !userData) return;
     try {
-      await addDoc(collection(db, 'ad_hoc_tasks'), {
-        ...formData,
-        creatorId: user.uid,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
-      });
+      const timestamp = nowIso();
+      const { error } = await supabase
+        .from('ad_hoc_tasks')
+        .insert({
+          title: formData.title.trim(),
+          category: formData.category,
+          status: formData.status,
+          priority: formData.priority,
+          due_date: toNullableDate(formData.dueDate),
+          notes: formData.notes.trim(),
+          creator_user_id: userData.id,
+          created_at: timestamp,
+          updated_at: timestamp
+        });
+
+      if (error) throw error;
+
       setIsCreating(false);
       setFormData({ title: '', category: 'Design Needs', status: 'Open', priority: 'Normal', dueDate: '', notes: '' });
     } catch (error) {
@@ -54,11 +96,21 @@ export function AdHocTasks() {
     e.preventDefault();
     if (!editingTask) return;
     try {
-      const taskRef = doc(db, 'ad_hoc_tasks', editingTask.id);
-      await updateDoc(taskRef, {
-        ...editingTask,
-        updatedAt: serverTimestamp()
-      });
+      const { error } = await supabase
+        .from('ad_hoc_tasks')
+        .update({
+          title: editingTask.title || '',
+          category: editingTask.category || 'Design Needs',
+          status: editingTask.status || 'Open',
+          priority: editingTask.priority || 'Normal',
+          due_date: toNullableDate(editingTask.dueDate),
+          notes: editingTask.notes || '',
+          updated_at: nowIso()
+        })
+        .eq('id', editingTask.id);
+
+      if (error) throw error;
+
       setEditingTask(null);
     } catch (error) {
       console.error("Error updating task:", error);

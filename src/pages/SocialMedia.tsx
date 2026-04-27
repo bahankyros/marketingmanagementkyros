@@ -1,10 +1,28 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Share2, Plus, Calendar, BarChart2, CheckCircle2, CircleDashed, X } from 'lucide-react';
-import { collection, query, orderBy, onSnapshot, addDoc, doc, updateDoc, serverTimestamp } from 'firebase/firestore';
-import { db } from '../lib/firebase';
 import { useAuth } from '../lib/AuthContext';
 import { useCampaigns } from '../lib/useCampaigns';
+import { supabase } from '../lib/supabase';
+import { nowIso, subscribeToTable, toNullableDate, toNullableUuid, toNumber } from '../lib/supabaseData';
+
+function normalizeSocialPost(row: any) {
+  return {
+    id: row.id,
+    platform: row.platform || 'Instagram',
+    contentType: row.content_type || 'Reel',
+    campaignId: row.campaign_id || '',
+    outlet: row.outlet_name || 'All Outlets',
+    publishDate: row.publish_date || '',
+    status: row.status || 'Brief',
+    reach: toNumber(row.reach),
+    engagement: toNumber(row.engagement),
+    clicks: toNumber(row.clicks),
+    authorId: row.author_user_id || '',
+    createdAt: row.created_at || '',
+    updatedAt: row.updated_at || ''
+  };
+}
 
 export function SocialMedia() {
   const { user, userData } = useAuth();
@@ -32,27 +50,55 @@ export function SocialMedia() {
 
   useEffect(() => {
     if (!user) return;
-    const q = query(collection(db, 'social_posts'), orderBy('createdAt', 'desc'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setPosts(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    const fetchPosts = async () => {
+      const { data, error } = await supabase
+        .from('social_posts')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error("Error fetching posts:", error);
+        setLoading(false);
+        return;
+      }
+
+      setPosts((data || []).map(normalizeSocialPost));
       setLoading(false);
+    };
+
+    void fetchPosts();
+    const unsubscribe = subscribeToTable('social-posts-page', 'social_posts', () => {
+      void fetchPosts();
     });
+
     return () => unsubscribe();
   }, [user]);
 
   const handleCreateSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!user || !canManageSocial) return;
+    if (!user || !userData || !canManageSocial) return;
     try {
-      await addDoc(collection(db, 'social_posts'), {
-        ...formData,
-        authorId: user.uid,
-        reach: Number(formData.reach) || 0,
-        engagement: Number(formData.engagement) || 0,
-        clicks: Number(formData.clicks) || 0,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
-      });
+      const timestamp = nowIso();
+      const { error } = await supabase
+        .from('social_posts')
+        .insert({
+          platform: formData.platform,
+          content_type: formData.contentType,
+          campaign_id: toNullableUuid(formData.campaignId),
+          outlet_id: null,
+          outlet_name: formData.outlet.trim() || 'All Outlets',
+          publish_date: toNullableDate(formData.publishDate),
+          status: formData.status,
+          reach: Number(formData.reach) || 0,
+          engagement: Number(formData.engagement) || 0,
+          clicks: Number(formData.clicks) || 0,
+          author_user_id: userData.id,
+          created_at: timestamp,
+          updated_at: timestamp
+        });
+
+      if (error) throw error;
+
       setIsCreating(false);
       setFormData({ platform: 'Instagram', contentType: 'Reel', campaignId: '', outlet: 'All Outlets', publishDate: '', status: 'Brief', reach: '', engagement: '', clicks: '' });
     } catch (error) {
@@ -65,14 +111,25 @@ export function SocialMedia() {
     e.preventDefault();
     if (!editingPost || !canManageSocial) return;
     try {
-      const pRef = doc(db, 'social_posts', editingPost.id);
-      await updateDoc(pRef, {
-        ...editingPost,
-        reach: Number(editingPost.reach) || 0,
-        engagement: Number(editingPost.engagement) || 0,
-        clicks: Number(editingPost.clicks) || 0,
-        updatedAt: serverTimestamp()
-      });
+      const { error } = await supabase
+        .from('social_posts')
+        .update({
+          platform: editingPost.platform || 'Instagram',
+          content_type: editingPost.contentType || 'Reel',
+          campaign_id: toNullableUuid(editingPost.campaignId),
+          outlet_id: null,
+          outlet_name: editingPost.outlet || 'All Outlets',
+          publish_date: toNullableDate(editingPost.publishDate),
+          status: editingPost.status || 'Brief',
+          reach: Number(editingPost.reach) || 0,
+          engagement: Number(editingPost.engagement) || 0,
+          clicks: Number(editingPost.clicks) || 0,
+          updated_at: nowIso()
+        })
+        .eq('id', editingPost.id);
+
+      if (error) throw error;
+
       setEditingPost(null);
     } catch (error) {
       console.error("Error updating post:", error);
@@ -252,7 +309,7 @@ export function SocialMedia() {
                     <label className="text-sm font-medium text-neutral-700">Campaign Tie-in</label>
                     <select value={formData.campaignId} onChange={e=>setFormData({...formData, campaignId: e.target.value})} className="w-full p-2 bg-neutral-50 border border-neutral-200 rounded-lg outline-none focus:ring-2 focus:ring-fuchsia-500">
                       <option value="">Always On / No Campaign</option>
-                      {campaigns.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+                      {campaigns.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                     </select>
                   </div>
                   

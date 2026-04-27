@@ -1,9 +1,24 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { BookOpen, Plus, Globe, ExternalLink, PenSquare, X } from 'lucide-react';
-import { collection, query, orderBy, onSnapshot, addDoc, doc, updateDoc, serverTimestamp } from 'firebase/firestore';
-import { db } from '../lib/firebase';
 import { useAuth } from '../lib/AuthContext';
+import { supabase } from '../lib/supabase';
+import { nowIso, subscribeToTable, toNullableDate, toNumber } from '../lib/supabaseData';
+
+function normalizeBlogOutreach(row: any) {
+  return {
+    id: row.id,
+    domain: row.domain || '',
+    targetDate: row.target_date || '',
+    keywords: row.keywords || '',
+    expectedReach: toNumber(row.expected_reach),
+    link: row.link || '',
+    status: row.status || 'Not Contacted',
+    picId: row.pic_user_id || '',
+    createdAt: row.created_at || '',
+    updatedAt: row.updated_at || ''
+  };
+}
 
 export function BlogOutreach() {
   const { user, userData } = useAuth();
@@ -27,25 +42,51 @@ export function BlogOutreach() {
 
   useEffect(() => {
     if (!user) return;
-    const q = query(collection(db, 'blog_outreach'), orderBy('createdAt', 'desc'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setOutreach(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    const fetchOutreach = async () => {
+      const { data, error } = await supabase
+        .from('blog_outreach')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error("Error fetching outreach:", error);
+        setLoading(false);
+        return;
+      }
+
+      setOutreach((data || []).map(normalizeBlogOutreach));
       setLoading(false);
+    };
+
+    void fetchOutreach();
+    const unsubscribe = subscribeToTable('blog-outreach-page', 'blog_outreach', () => {
+      void fetchOutreach();
     });
+
     return () => unsubscribe();
   }, [user]);
 
   const handleCreateSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!user || !canManageOutreach) return;
+    if (!user || !userData || !canManageOutreach) return;
     try {
-      await addDoc(collection(db, 'blog_outreach'), {
-        ...formData,
-        expectedReach: Number(formData.expectedReach) || 0,
-        picId: user.uid,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
-      });
+      const timestamp = nowIso();
+      const { error } = await supabase
+        .from('blog_outreach')
+        .insert({
+          domain: formData.domain.trim(),
+          target_date: toNullableDate(formData.targetDate),
+          keywords: formData.keywords.trim(),
+          expected_reach: Number(formData.expectedReach) || 0,
+          link: formData.link.trim(),
+          status: formData.status,
+          pic_user_id: userData.id,
+          created_at: timestamp,
+          updated_at: timestamp
+        });
+
+      if (error) throw error;
+
       setIsCreating(false);
       setFormData({ domain: '', targetDate: '', keywords: '', expectedReach: '', link: '', status: 'Not Contacted' });
     } catch (error) {
@@ -58,12 +99,21 @@ export function BlogOutreach() {
     e.preventDefault();
     if (!editingBlog || !canManageOutreach) return;
     try {
-      const bRef = doc(db, 'blog_outreach', editingBlog.id);
-      await updateDoc(bRef, {
-        ...editingBlog,
-        expectedReach: Number(editingBlog.expectedReach) || 0,
-        updatedAt: serverTimestamp()
-      });
+      const { error } = await supabase
+        .from('blog_outreach')
+        .update({
+          domain: editingBlog.domain || '',
+          target_date: toNullableDate(editingBlog.targetDate),
+          keywords: editingBlog.keywords || '',
+          expected_reach: Number(editingBlog.expectedReach) || 0,
+          link: editingBlog.link || '',
+          status: editingBlog.status || 'Not Contacted',
+          updated_at: nowIso()
+        })
+        .eq('id', editingBlog.id);
+
+      if (error) throw error;
+
       setEditingBlog(null);
     } catch (error) {
       console.error("Error updating outreach:", error);

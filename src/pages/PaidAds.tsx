@@ -1,10 +1,28 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { DollarSign, Plus, Megaphone, TrendingUp, MousePointerClick, CheckCircle2, X } from 'lucide-react';
-import { collection, query, orderBy, onSnapshot, addDoc, doc, updateDoc, serverTimestamp } from 'firebase/firestore';
-import { db } from '../lib/firebase';
 import { useAuth } from '../lib/AuthContext';
 import { useCampaigns } from '../lib/useCampaigns';
+import { supabase } from '../lib/supabase';
+import { nowIso, subscribeToTable, toNullableUuid, toNumber } from '../lib/supabaseData';
+
+function normalizePaidAd(row: any) {
+  return {
+    id: row.id,
+    platform: row.platform || 'Meta',
+    campaignName: row.campaign_name || '',
+    objective: row.objective || 'Traffic',
+    campaignId: row.campaign_id || '',
+    spend: toNumber(row.spend),
+    reach: toNumber(row.reach),
+    results: toNumber(row.results),
+    resultType: row.result_type || 'Video View',
+    engagement: toNumber(row.engagement),
+    ownerId: row.owner_user_id || '',
+    createdAt: row.created_at || '',
+    updatedAt: row.updated_at || ''
+  };
+}
 
 export function PaidAds() {
   const { user, userData } = useAuth();
@@ -32,11 +50,27 @@ export function PaidAds() {
 
   useEffect(() => {
     if (!user) return;
-    const q = query(collection(db, 'paid_ads'), orderBy('createdAt', 'desc'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setAds(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    const fetchAds = async () => {
+      const { data, error } = await supabase
+        .from('paid_ads')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error("Error fetching paid ads:", error);
+        setLoading(false);
+        return;
+      }
+
+      setAds((data || []).map(normalizePaidAd));
       setLoading(false);
+    };
+
+    void fetchAds();
+    const unsubscribe = subscribeToTable('paid-ads-page', 'paid_ads', () => {
+      void fetchAds();
     });
+
     return () => unsubscribe();
   }, [user]);
 
@@ -44,16 +78,26 @@ export function PaidAds() {
     e.preventDefault();
     if (!user || !userData || !canManageAds) return;
     try {
-      await addDoc(collection(db, 'paid_ads'), {
-        ...formData,
-        spend: Number(formData.spend) || 0,
-        reach: Number(formData.reach) || 0,
-        results: Number(formData.results) || 0,
-        engagement: Number(formData.engagement) || 0,
-        ownerId: user.uid,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
-      });
+      const timestamp = nowIso();
+      const { error } = await supabase
+        .from('paid_ads')
+        .insert({
+          platform: formData.platform,
+          campaign_name: formData.campaignName.trim(),
+          objective: formData.objective,
+          campaign_id: toNullableUuid(formData.campaignId),
+          spend: Number(formData.spend) || 0,
+          reach: Number(formData.reach) || 0,
+          results: Number(formData.results) || 0,
+          result_type: formData.resultType,
+          engagement: Number(formData.engagement) || 0,
+          owner_user_id: userData.id,
+          created_at: timestamp,
+          updated_at: timestamp
+        });
+
+      if (error) throw error;
+
       setIsCreating(false);
       setFormData({ platform: 'Meta', campaignName: '', objective: 'Traffic', campaignId: '', spend: '', reach: '', results: '', resultType: 'Video View', engagement: '' });
     } catch (error) {
@@ -66,15 +110,24 @@ export function PaidAds() {
     e.preventDefault();
     if (!editingAd || !canManageAds) return;
     try {
-      const adRef = doc(db, 'paid_ads', editingAd.id);
-      await updateDoc(adRef, {
-        ...editingAd,
-        spend: Number(editingAd.spend) || 0,
-        reach: Number(editingAd.reach) || 0,
-        results: Number(editingAd.results) || 0,
-        engagement: Number(editingAd.engagement) || 0,
-        updatedAt: serverTimestamp()
-      });
+      const { error } = await supabase
+        .from('paid_ads')
+        .update({
+          platform: editingAd.platform || 'Meta',
+          campaign_name: editingAd.campaignName || '',
+          objective: editingAd.objective || 'Traffic',
+          campaign_id: toNullableUuid(editingAd.campaignId),
+          spend: Number(editingAd.spend) || 0,
+          reach: Number(editingAd.reach) || 0,
+          results: Number(editingAd.results) || 0,
+          result_type: editingAd.resultType || 'Video View',
+          engagement: Number(editingAd.engagement) || 0,
+          updated_at: nowIso()
+        })
+        .eq('id', editingAd.id);
+
+      if (error) throw error;
+
       setEditingAd(null);
     } catch (error) {
       console.error("Error updating ad data:", error);
@@ -267,7 +320,7 @@ export function PaidAds() {
                     <label className="text-sm font-medium text-neutral-700">Internal Campaign Tie-in</label>
                     <select value={formData.campaignId} onChange={e=>setFormData({...formData, campaignId: e.target.value})} className="w-full p-2 bg-neutral-50 border border-neutral-200 rounded-lg outline-none focus:ring-2 focus:ring-violet-500">
                       <option value="">None / Standalone Ad</option>
-                      {campaigns.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+                      {campaigns.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                     </select>
                   </div>
                   

@@ -4,10 +4,9 @@ import {
   Plus, Search, Filter, Calendar, Target, DollarSign,
   Megaphone, Smartphone, ChevronRight, CheckCircle2, Circle, ArrowLeft, CheckSquare, Clock, ImageIcon, Upload, Pencil, Trash2, X, AlertTriangle
 } from 'lucide-react';
-import { collection, query, orderBy, onSnapshot, addDoc, serverTimestamp, doc, updateDoc, writeBatch, deleteDoc, getDocs } from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { db, storage } from '../lib/firebase';
 import { useAuth } from '../lib/AuthContext';
+import { supabase } from '../lib/supabase';
+import { normalizeCampaign, nowIso, subscribeToTable, toNullableDate, toNullableUuid } from '../lib/supabaseData';
 
 const DIGITAL_CHECKLIST = [
   'Campaign brief ready', 'Offer confirmed', 'Artwork drafted', 'Copy approved', 
@@ -191,6 +190,17 @@ function normalizeChecklistTemplate(template: any): CampaignChecklistTemplate | 
   };
 }
 
+function normalizeChecklistItem(row: any) {
+  return {
+    id: row.id,
+    task: row.task || '',
+    completed: row.completed === true,
+    order: typeof row.sort_order === 'number' ? row.sort_order : 0,
+    createdAt: row.created_at || '',
+    updatedAt: row.updated_at || ''
+  };
+}
+
 function isChecklistTemplateCompatible(formType: 'digital' | 'physical', templateType: ChecklistTemplateType) {
   if (formType === 'digital') {
     return templateType === 'Digital' || templateType === 'Hybrid';
@@ -227,12 +237,24 @@ export function Campaigns() {
     
     setIsUploading(true);
     try {
-      const storageRef = ref(storage, `campaigns/${selectedCampaign.id}-${Date.now()}-${file.name}`);
-      await uploadBytes(storageRef, file);
-      const url = await getDownloadURL(storageRef);
-      
-      const campRef = doc(db, 'campaigns', selectedCampaign.id);
-      await updateDoc(campRef, { assetUrl: url, updatedAt: serverTimestamp() });
+      const filePath = `${selectedCampaign.id}/${Date.now()}-${file.name}`;
+      const { error: uploadError } = await supabase.storage
+        .from('campaign-assets')
+        .upload(filePath, file);
+
+      if (uploadError) throw uploadError;
+
+      const { data } = supabase.storage
+        .from('campaign-assets')
+        .getPublicUrl(filePath);
+      const url = data.publicUrl;
+
+      const { error } = await supabase
+        .from('campaigns')
+        .update({ asset_url: url, updated_at: nowIso() })
+        .eq('id', selectedCampaign.id);
+
+      if (error) throw error;
       
       setSelectedCampaign({ ...selectedCampaign, assetUrl: url });
       setCampaigns(prev => prev.map(camp => camp.id === selectedCampaign.id ? { ...camp, assetUrl: url } : camp));
@@ -261,14 +283,25 @@ export function Campaigns() {
     if (!user) return;
 
     setLoading(true);
-    const q = query(collection(db, 'campaigns'), orderBy('createdAt', 'desc'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setCampaigns(data);
+    const fetchCampaigns = async () => {
+      const { data, error } = await supabase
+        .from('campaigns')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error("Error fetching campaigns:", error);
+        setLoading(false);
+        return;
+      }
+
+      setCampaigns((data || []).map(normalizeCampaign));
       setLoading(false);
-    }, (error) => {
-      console.error("Error fetching campaigns:", error);
-      setLoading(false);
+    };
+
+    void fetchCampaigns();
+    const unsubscribe = subscribeToTable('campaigns-page', 'campaigns', () => {
+      void fetchCampaigns();
     });
 
     return () => unsubscribe();
@@ -278,9 +311,25 @@ export function Campaigns() {
   useEffect(() => {
     if (view !== 'detail' || !selectedCampaign || !user) return;
 
-    const q = query(collection(db, 'campaigns', selectedCampaign.id, 'checklist'), orderBy('createdAt', 'asc'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setChecklist(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    const fetchChecklist = async () => {
+      const { data, error } = await supabase
+        .from('campaign_checklist_items')
+        .select('*')
+        .eq('campaign_id', selectedCampaign.id)
+        .order('sort_order', { ascending: true });
+
+      if (error) {
+        console.error("Error fetching checklist:", error);
+        setChecklist([]);
+        return;
+      }
+
+      setChecklist((data || []).map(normalizeChecklistItem));
+    };
+
+    void fetchChecklist();
+    const unsubscribe = subscribeToTable(`campaign-checklist-${selectedCampaign.id}`, 'campaign_checklist_items', () => {
+      void fetchChecklist();
     });
 
     return () => unsubscribe();
@@ -300,25 +349,48 @@ export function Campaigns() {
     }
 
     setLoadingChecklistTemplates(true);
-    const q = query(collection(db, 'checklistTemplates'), orderBy('updatedAt', 'desc'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const nextTemplates = snapshot.docs.flatMap((templateDoc) => {
-        const normalizedTemplate = normalizeChecklistTemplate({ id: templateDoc.id, ...templateDoc.data() });
+    const fetchTemplates = async () => {
+      const { data, error } = await supabase
+        .from('checklist_templates')
+        .select('id, name, type, category, checklist_template_items(task, sort_order)')
+        .order('updated_at', { ascending: false });
+
+      if (error) {
+        console.error("Error fetching checklist templates:", error);
+        setLoadingChecklistTemplates(false);
+        setFeedback({
+          tone: 'error',
+          message: 'Checklist templates could not be loaded right now. The default campaign checklist is still available.'
+        });
+        return;
+      }
+
+      const nextTemplates = (data || []).flatMap((template: any) => {
+        const tasks = Array.isArray(template.checklist_template_items)
+          ? [...template.checklist_template_items]
+              .sort((left: any, right: any) => Number(left.sort_order || 0) - Number(right.sort_order || 0))
+              .map((item: any) => item.task)
+          : [];
+        const normalizedTemplate = normalizeChecklistTemplate({ ...template, tasks });
         return normalizedTemplate ? [normalizedTemplate] : [];
       });
 
       setChecklistTemplates(nextTemplates);
       setLoadingChecklistTemplates(false);
-    }, (error) => {
-      console.error("Error fetching checklist templates:", error);
-      setLoadingChecklistTemplates(false);
-      setFeedback({
-        tone: 'error',
-        message: 'Checklist templates could not be loaded right now. The default campaign checklist is still available.'
-      });
+    };
+
+    void fetchTemplates();
+    const unsubscribeTemplates = subscribeToTable('campaign-checklist-templates', 'checklist_templates', () => {
+      void fetchTemplates();
+    });
+    const unsubscribeTemplateItems = subscribeToTable('campaign-checklist-template-items', 'checklist_template_items', () => {
+      void fetchTemplates();
     });
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribeTemplates();
+      unsubscribeTemplateItems();
+    };
   }, [view, user, canManageCampaigns]);
 
   useEffect(() => {
@@ -357,33 +429,40 @@ export function Campaigns() {
         : PHYSICAL_CHECKLIST;
 
     try {
-      const docRef = await addDoc(collection(db, 'campaigns'), {
-        name,
-        objective,
-        status: formData.status,
-        type: formType === 'digital' ? 'Digital' : 'Promo',
-        ownerId: user.uid,
-        startDate: formData.startDate || '',
-        endDate: formData.endDate || '',
-        budget: normalizedBudget,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
-      });
+      const timestamp = nowIso();
+      const { data: campaignRow, error: campaignError } = await supabase
+        .from('campaigns')
+        .insert({
+          name,
+          objective,
+          status: formData.status,
+          type: formType === 'digital' ? 'Digital' : 'Promo',
+          owner_user_id: userData.id,
+          start_date: toNullableDate(formData.startDate),
+          end_date: toNullableDate(formData.endDate),
+          budget: normalizedBudget,
+          created_at: timestamp,
+          updated_at: timestamp
+        })
+        .select('*')
+        .single();
 
-      // Batch write the subcollection checklist items based on template
-      const batch = writeBatch(db);
+      if (campaignError) throw campaignError;
 
-      items.forEach((taskName, index) => {
-        const itemRef = doc(collection(db, 'campaigns', docRef.id, 'checklist'));
-        batch.set(itemRef, {
+      const checklistPayload = items.map((taskName, index) => ({
+          campaign_id: campaignRow.id,
           task: taskName,
           completed: false,
-          order: index,
-          createdAt: serverTimestamp()
-        });
-      });
-      
-      await batch.commit();
+          sort_order: index,
+          created_at: timestamp,
+          updated_at: timestamp
+      }));
+
+      const { error: checklistError } = await supabase
+        .from('campaign_checklist_items')
+        .insert(checklistPayload);
+
+      if (checklistError) throw checklistError;
 
       setView('list');
       setFormData({ name: '', objective: '', startDate: '', endDate: '', budget: '', status: 'Planning' });
@@ -411,11 +490,6 @@ export function Campaigns() {
       return;
     }
 
-    if (!selectedCampaign.createdAt) {
-      setFeedback({ tone: 'error', message: 'This campaign is missing its original createdAt value and cannot be edited safely.' });
-      return;
-    }
-
     const normalizedBudget = editingCampaign.budget.trim() === '' ? 0 : Number(editingCampaign.budget);
     if (Number.isNaN(normalizedBudget)) {
       setFeedback({ tone: 'error', message: 'Budget must be a valid number.' });
@@ -424,25 +498,28 @@ export function Campaigns() {
 
     const ownerId = typeof selectedCampaign.ownerId === 'string' && selectedCampaign.ownerId.trim()
       ? selectedCampaign.ownerId
-      : user.uid;
+      : userData?.id || '';
     const normalizedType = normalizeCampaignType(selectedCampaign);
-    const campaignRef = doc(db, 'campaigns', selectedCampaign.id);
     const updatePayload = {
       name,
       objective,
       status: editingCampaign.status,
       type: normalizedType,
-      ownerId,
-      createdAt: selectedCampaign.createdAt,
-      updatedAt: serverTimestamp(),
-      startDate: editingCampaign.startDate || '',
-      endDate: editingCampaign.endDate || '',
+      owner_user_id: toNullableUuid(ownerId),
+      updated_at: nowIso(),
+      start_date: toNullableDate(editingCampaign.startDate),
+      end_date: toNullableDate(editingCampaign.endDate),
       budget: normalizedBudget
     };
 
     setIsSavingCampaign(true);
     try {
-      await updateDoc(campaignRef, updatePayload);
+      const { error } = await supabase
+        .from('campaigns')
+        .update(updatePayload)
+        .eq('id', selectedCampaign.id);
+
+      if (error) throw error;
 
       const nextCampaign = {
         ...selectedCampaign,
@@ -487,13 +564,12 @@ export function Campaigns() {
 
     setIsDeletingCampaign(true);
     try {
-      const batch = writeBatch(db);
-      const checklistSnapshot = await getDocs(collection(db, 'campaigns', campaignId, 'checklist'));
-      checklistSnapshot.docs.forEach(itemDoc => {
-        batch.delete(itemDoc.ref);
-      });
-      batch.delete(doc(db, 'campaigns', campaignId));
-      await batch.commit();
+      const { error } = await supabase
+        .from('campaigns')
+        .delete()
+        .eq('id', campaignId);
+
+      if (error) throw error;
 
       setCampaigns(prev => prev.filter(camp => camp.id !== campaignId));
       setChecklist([]);
@@ -510,8 +586,8 @@ export function Campaigns() {
 
       setFeedback({
         tone: 'error',
-        message: errorCode === 'permission-denied'
-          ? 'Delete was blocked by Firestore. Confirm your /users/{uid} role is admin and that the latest firestore.rules are deployed to Firebase.'
+        message: errorCode === '42501'
+          ? 'Delete was blocked by Supabase row-level security. Confirm this user has the admin role.'
           : 'Failed to delete this campaign. Please try again.'
       });
     } finally {
@@ -522,8 +598,12 @@ export function Campaigns() {
   const toggleChecklistItem = async (itemId: string, currentStatus: boolean) => {
     if (!selectedCampaign || !canManageCampaigns) return;
     try {
-      const itemRef = doc(db, 'campaigns', selectedCampaign.id, 'checklist', itemId);
-      await updateDoc(itemRef, { completed: !currentStatus, updatedAt: serverTimestamp() });
+      const { error } = await supabase
+        .from('campaign_checklist_items')
+        .update({ completed: !currentStatus, updated_at: nowIso() })
+        .eq('id', itemId);
+
+      if (error) throw error;
     } catch (error) {
       console.error("Error updating checklist item:", error);
       setFeedback({ tone: 'error', message: 'Failed to update the checklist item. Please try again.' });
@@ -1174,7 +1254,7 @@ export function Campaigns() {
                 </div>
                 <h3 className="text-lg font-bold text-neutral-900">Delete Campaign</h3>
                 <p className="text-sm text-neutral-500 mt-2 leading-relaxed">
-                  This will permanently remove <span className="font-semibold text-neutral-800">{selectedCampaign.name}</span> and its checklist items from Firestore. This action cannot be undone.
+                  This will permanently remove <span className="font-semibold text-neutral-800">{selectedCampaign.name}</span> and its checklist items from Supabase. This action cannot be undone.
                 </p>
 
                 <div className="mt-6 flex justify-end gap-3">

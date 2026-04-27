@@ -1,11 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { MonitorPlay, Target, ImageIcon, CheckCircle, Clock, X, Upload } from 'lucide-react';
-import { collection, query, orderBy, onSnapshot, doc, setDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { db, storage } from '../lib/firebase';
 import { useAuth } from '../lib/AuthContext';
 import { useCampaigns } from '../lib/useCampaigns';
+import { supabase } from '../lib/supabase';
+import { nowIso, subscribeToTable, toNullableDate, toNullableUuid } from '../lib/supabaseData';
 
 type MasterOutlet = {
   id: string;
@@ -14,6 +13,36 @@ type MasterOutlet = {
 
 const LEGACY_OUTLET_NAMES = ['Mytown', 'Centrepoint', 'Sogo', 'Empire', 'Setia City Mall', 'Eco Grandeur'];
 const SLOTS_PER_OUTLET = 3;
+
+function normalizeMallDisplay(row: any, masterOutlets: MasterOutlet[]) {
+  const resolvedOutlet = masterOutlets.find((outlet) => outlet.id === row.outlet_id)
+    || masterOutlets.find((outlet) => outlet.name === row.outlet_name)
+    || null;
+  const outletName = resolvedOutlet?.name || row.outlet_name || '';
+
+  return {
+    id: row.id,
+    slotCode: row.slot_code || '',
+    outlet_id: row.outlet_id || '',
+    outlet_name: outletName,
+    outlet: outletName,
+    designStatus: row.design_status || 'Not started',
+    approvalStatus: row.approval_status || 'Not Submitted',
+    currentStatus: row.current_status || 'Draft',
+    locationDescription: row.location_description || '',
+    campaignId: row.campaign_id || '',
+    installationDate: row.installation_date || '',
+    mallPicName: row.mall_pic_name || '',
+    mallPicContact: row.mall_pic_contact || '',
+    remarks: row.remarks || '',
+    proofText: row.proof_text || '',
+    proofImageUrl: row.proof_image_url || '',
+    proofImagePath: row.proof_image_path || '',
+    photoProof: row.photo_proof_url || row.proof_image_url || '',
+    createdAt: row.created_at || '',
+    updatedAt: row.updated_at || ''
+  };
+}
 
 export function MallDisplays() {
   const { userData } = useAuth();
@@ -36,10 +65,23 @@ export function MallDisplays() {
     
     setIsUploading(true);
     try {
-      const storageRef = ref(storage, `mall_displays/${editingSlot.slotCode}/${Date.now()}-${file.name}`);
-      await uploadBytes(storageRef, file);
-      const url = await getDownloadURL(storageRef);
-      setEditingSlot({ ...editingSlot, photoProof: url });
+      const filePath = `${editingSlot.slotCode}/${Date.now()}-${file.name}`;
+      const { error } = await supabase.storage
+        .from('mall-display-proofs')
+        .upload(filePath, file);
+
+      if (error) throw error;
+
+      const { data } = supabase.storage
+        .from('mall-display-proofs')
+        .getPublicUrl(filePath);
+
+      setEditingSlot({
+        ...editingSlot,
+        photoProof: data.publicUrl,
+        proofImageUrl: data.publicUrl,
+        proofImagePath: filePath
+      });
     } catch (error) {
       console.error("Error uploading file:", error);
       alert("Photo upload failed.");
@@ -56,18 +98,31 @@ export function MallDisplays() {
   const replaceCount = displays.filter(d => d.currentStatus === 'Expired').length;
 
   useEffect(() => {
-    const outletQuery = query(collection(db, 'outlets'), orderBy('name'));
-    const unsubscribeOutlets = onSnapshot(outletQuery, (snapshot) => {
-      const normalizedOutlets = snapshot.docs
-        .map((outletDoc) => {
-          const outletData = outletDoc.data();
-          return typeof outletData.name === 'string' && outletData.name.trim()
-            ? { id: outletDoc.id, name: outletData.name.trim() }
-            : null;
-        })
+    const fetchOutlets = async () => {
+      const { data, error } = await supabase
+        .from('outlets')
+        .select('id, name')
+        .order('name', { ascending: true });
+
+      if (error) {
+        console.error('Error fetching outlets for displays:', error);
+        return;
+      }
+
+      const normalizedOutlets = (data || [])
+        .map((outlet) => (
+          typeof outlet.name === 'string' && outlet.name.trim()
+            ? { id: outlet.id, name: outlet.name.trim() }
+            : null
+        ))
         .filter((outlet): outlet is MasterOutlet => outlet !== null);
 
       setMasterOutlets(normalizedOutlets);
+    };
+
+    void fetchOutlets();
+    const unsubscribeOutlets = subscribeToTable('mall-display-outlets', 'outlets', () => {
+      void fetchOutlets();
     });
 
     return () => {
@@ -76,54 +131,55 @@ export function MallDisplays() {
   }, []);
 
   useEffect(() => {
-    const displayQuery = query(collection(db, 'mall_displays'), orderBy('slotCode'));
-    const unsubscribeDisplays = onSnapshot(displayQuery, (snapshot) => {
-      setDisplays(snapshot.docs.map(doc => {
-        const data = doc.data();
-        const legacyOutletName = typeof data.outlet === 'string' ? data.outlet : '';
-        const resolvedOutletName = typeof data.outlet_name === 'string' && data.outlet_name.trim()
-          ? data.outlet_name.trim()
-          : legacyOutletName;
-        const resolvedOutlet = masterOutlets.find((outlet) => outlet.id === data.outlet_id)
-          || masterOutlets.find((outlet) => outlet.name === resolvedOutletName)
-          || null;
+    const fetchDisplays = async () => {
+      const { data, error } = await supabase
+        .from('mall_displays')
+        .select('*')
+        .order('slot_code', { ascending: true });
 
-        return {
-          id: doc.id,
-          ...data,
-          outlet_id: typeof data.outlet_id === 'string' && data.outlet_id.trim()
-            ? data.outlet_id
-            : resolvedOutlet?.id || '',
-          outlet_name: resolvedOutlet?.name || resolvedOutletName,
-          outlet: resolvedOutlet?.name || resolvedOutletName,
-          photoProof: data.photoProof || data.photoProofUrl || ''
-        };
-      }));
+      if (error) {
+        console.error("Error fetching mall displays:", error);
+        setLoading(false);
+        return;
+      }
+
+      setDisplays((data || []).map((display) => normalizeMallDisplay(display, masterOutlets)));
       setLoading(false);
+    };
+
+    void fetchDisplays();
+    const unsubscribeDisplays = subscribeToTable('mall-displays-page', 'mall_displays', () => {
+      void fetchDisplays();
     });
 
     return () => unsubscribeDisplays();
   }, [masterOutlets]);
 
   const buildAdminSlotPayload = (slot: any) => {
-    const payload: Record<string, any> = {
-      outlet_id: slot.outlet_id || '',
+    const outletId = toNullableUuid(slot.outlet_id);
+    if (!outletId) {
+      throw new Error('This display slot needs a Supabase outlet before it can be saved.');
+    }
+
+    return {
+      outlet_id: outletId,
       outlet_name: slot.outlet_name || slot.outlet || '',
-      outlet: slot.outlet_name || slot.outlet || '',
-      slotCode: slot.slotCode,
-      designStatus: slot.designStatus || 'Not started',
-      approvalStatus: slot.approvalStatus || 'Not Submitted',
-      currentStatus: slot.currentStatus || 'Draft'
+      slot_code: slot.slotCode,
+      design_status: slot.designStatus || 'Not started',
+      approval_status: slot.approvalStatus || 'Not Submitted',
+      current_status: slot.currentStatus || 'Draft',
+      location_description: slot.locationDescription || '',
+      campaign_id: toNullableUuid(slot.campaignId),
+      installation_date: toNullableDate(slot.installationDate),
+      mall_pic_name: slot.mallPicName || '',
+      mall_pic_contact: slot.mallPicContact || '',
+      remarks: slot.remarks || '',
+      proof_text: slot.proofText || '',
+      proof_image_url: slot.proofImageUrl || slot.photoProof || '',
+      proof_image_path: slot.proofImagePath || '',
+      photo_proof_url: slot.photoProof || '',
+      updated_at: nowIso()
     };
-
-    if (slot.locationDescription) payload.locationDescription = slot.locationDescription;
-    if (slot.campaignId) payload.campaignId = slot.campaignId;
-    if (slot.installationDate) payload.installationDate = slot.installationDate;
-    if (slot.mallPicName) payload.mallPicName = slot.mallPicName;
-    if (slot.mallPicContact) payload.mallPicContact = slot.mallPicContact;
-    if (slot.photoProof) payload.photoProof = slot.photoProof;
-
-    return payload;
   };
 
   const handleSaveSlot = async (e: React.FormEvent) => {
@@ -139,30 +195,43 @@ export function MallDisplays() {
     }
 
     try {
-      const slotRef = doc(db, 'mall_displays', editingSlot.slotCode);
-
       if (isNewSlot) {
         const createPayload = buildAdminSlotPayload(editingSlot);
-        await setDoc(slotRef, {
+        const { error } = await supabase
+          .from('mall_displays')
+          .insert({
           ...createPayload,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp()
+          created_at: nowIso()
         });
+
+        if (error) throw error;
       } else if (isAdmin) {
         const adminPayload = buildAdminSlotPayload(editingSlot);
-        await updateDoc(slotRef, {
-          ...adminPayload,
-          updatedAt: serverTimestamp()
-        });
+        const request = supabase
+          .from('mall_displays')
+          .update(adminPayload);
+        const { error } = editingSlot.id
+          ? await request.eq('id', editingSlot.id)
+          : await request.eq('slot_code', editingSlot.slotCode);
+
+        if (error) throw error;
       } else {
         const supervisorPayload: Record<string, any> = {
-          currentStatus: editingSlot.currentStatus || 'Draft',
-          updatedAt: serverTimestamp()
+          current_status: editingSlot.currentStatus || 'Draft',
+          proof_image_url: editingSlot.proofImageUrl || editingSlot.photoProof || '',
+          proof_image_path: editingSlot.proofImagePath || '',
+          photo_proof_url: editingSlot.photoProof || '',
+          updated_at: nowIso()
         };
 
-        if (editingSlot.photoProof) supervisorPayload.photoProof = editingSlot.photoProof;
+        const request = supabase
+          .from('mall_displays')
+          .update(supervisorPayload);
+        const { error } = editingSlot.id
+          ? await request.eq('id', editingSlot.id)
+          : await request.eq('slot_code', editingSlot.slotCode);
 
-        await updateDoc(slotRef, supervisorPayload);
+        if (error) throw error;
       }
 
       setEditingSlot(null);
@@ -330,7 +399,7 @@ export function MallDisplays() {
                         <select value={editingSlot.campaignId || ''} onChange={e => setEditingSlot({...editingSlot, campaignId: e.target.value})} className="w-full p-2 bg-neutral-50 border border-neutral-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-500">
                           <option value="">None</option>
                           {campaigns.map(c => (
-                            <option key={c.id} value={c.name}>{c.name}</option>
+                            <option key={c.id} value={c.id}>{c.name}</option>
                           ))}
                         </select>
                       </div>

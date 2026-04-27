@@ -1,10 +1,28 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Truck, Plus, CheckCircle2, CircleDashed, TrendingUp, DollarSign, X } from 'lucide-react';
-import { collection, query, orderBy, onSnapshot, addDoc, doc, updateDoc, serverTimestamp } from 'firebase/firestore';
-import { db } from '../lib/firebase';
 import { useAuth } from '../lib/AuthContext';
 import { useCampaigns } from '../lib/useCampaigns';
+import { supabase } from '../lib/supabase';
+import { nowIso, subscribeToTable, toNullableDate, toNullableUuid, toNumber } from '../lib/supabaseData';
+
+function normalizeDeliveryPromo(row: any) {
+  return {
+    id: row.id,
+    platform: row.platform || 'GrabFood',
+    promoType: row.promo_type || '',
+    campaignId: row.campaign_id || '',
+    startDate: row.start_date || '',
+    endDate: row.end_date || '',
+    spend: toNumber(row.spend),
+    sales: toNumber(row.sales),
+    funding: row.funding || 'Self-funded',
+    status: row.status || 'Proposed',
+    picId: row.pic_user_id || '',
+    createdAt: row.created_at || '',
+    updatedAt: row.updated_at || ''
+  };
+}
 
 export function DeliveryPromos() {
   const { user, userData } = useAuth();
@@ -32,11 +50,27 @@ export function DeliveryPromos() {
 
   useEffect(() => {
     if (!user) return;
-    const q = query(collection(db, 'delivery_promos'), orderBy('createdAt', 'desc'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setPromos(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    const fetchPromos = async () => {
+      const { data, error } = await supabase
+        .from('delivery_promos')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error("Error fetching promos:", error);
+        setLoading(false);
+        return;
+      }
+
+      setPromos((data || []).map(normalizeDeliveryPromo));
       setLoading(false);
+    };
+
+    void fetchPromos();
+    const unsubscribe = subscribeToTable('delivery-promos-page', 'delivery_promos', () => {
+      void fetchPromos();
     });
+
     return () => unsubscribe();
   }, [user]);
 
@@ -44,14 +78,26 @@ export function DeliveryPromos() {
     e.preventDefault();
     if (!user || !userData || !canManagePromos) return;
     try {
-      await addDoc(collection(db, 'delivery_promos'), {
-        ...formData,
-        spend: Number(formData.spend) || 0,
-        sales: Number(formData.sales) || 0,
-        picId: user.uid,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
-      });
+      const timestamp = nowIso();
+      const { error } = await supabase
+        .from('delivery_promos')
+        .insert({
+          platform: formData.platform,
+          promo_type: formData.promoType.trim(),
+          campaign_id: toNullableUuid(formData.campaignId),
+          start_date: toNullableDate(formData.startDate),
+          end_date: toNullableDate(formData.endDate),
+          spend: Number(formData.spend) || 0,
+          sales: Number(formData.sales) || 0,
+          funding: formData.funding,
+          status: formData.status,
+          pic_user_id: userData.id,
+          created_at: timestamp,
+          updated_at: timestamp
+        });
+
+      if (error) throw error;
+
       setIsCreating(false);
       setFormData({ platform: 'GrabFood', promoType: '', campaignId: '', startDate: '', endDate: '', spend: '', sales: '', funding: 'Self-funded', status: 'Proposed' });
     } catch (error) {
@@ -64,13 +110,24 @@ export function DeliveryPromos() {
     e.preventDefault();
     if (!editingPromo || !canManagePromos) return;
     try {
-      const promoRef = doc(db, 'delivery_promos', editingPromo.id);
-      await updateDoc(promoRef, {
-        ...editingPromo,
-        spend: Number(editingPromo.spend) || 0,
-        sales: Number(editingPromo.sales) || 0,
-        updatedAt: serverTimestamp()
-      });
+      const { error } = await supabase
+        .from('delivery_promos')
+        .update({
+          platform: editingPromo.platform || 'GrabFood',
+          promo_type: editingPromo.promoType || '',
+          campaign_id: toNullableUuid(editingPromo.campaignId),
+          start_date: toNullableDate(editingPromo.startDate),
+          end_date: toNullableDate(editingPromo.endDate),
+          spend: Number(editingPromo.spend) || 0,
+          sales: Number(editingPromo.sales) || 0,
+          funding: editingPromo.funding || 'Self-funded',
+          status: editingPromo.status || 'Proposed',
+          updated_at: nowIso()
+        })
+        .eq('id', editingPromo.id);
+
+      if (error) throw error;
+
       setEditingPromo(null);
     } catch (error) {
       console.error("Error updating promo:", error);
@@ -246,7 +303,7 @@ export function DeliveryPromos() {
                     <label className="text-sm font-medium text-neutral-700">Campaign Tie-in</label>
                     <select value={formData.campaignId} onChange={e=>setFormData({...formData, campaignId: e.target.value})} className="w-full p-2 bg-neutral-50 border border-neutral-200 rounded-lg outline-none focus:ring-2 focus:ring-orange-500">
                       <option value="">None / Standalone</option>
-                      {campaigns.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+                      {campaigns.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                     </select>
                   </div>
                   
