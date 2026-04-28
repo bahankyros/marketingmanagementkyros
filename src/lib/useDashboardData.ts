@@ -3,7 +3,7 @@ import type { AuthUser } from './AuthContext';
 import { supabase } from './supabase';
 import { subscribeToTable } from './supabaseData';
 
-type UserRole = 'admin' | 'supervisor' | 'finance';
+type UserRole = 'admin' | 'supervisor' | 'finance' | 'pic';
 
 type DashboardAccess = {
   settings: boolean;
@@ -34,7 +34,7 @@ const DEFAULT_SETTINGS = {
 
 function buildDashboardAccess(userRole: UserRole | null | undefined): DashboardAccess {
   const isAdmin = userRole === 'admin';
-  const isSupervisor = userRole === 'supervisor';
+  const isSupervisor = userRole === 'supervisor' || userRole === 'pic';
   const isFinance = userRole === 'finance';
   const canReadOperational = isAdmin || isSupervisor || isFinance;
 

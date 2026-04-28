@@ -1,10 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router';
 import { motion, AnimatePresence } from 'motion/react';
-import { 
-  LayoutDashboard, Megaphone, Handshake, MonitorPlay, 
-  Calendar, Smile, BookOpen, Truck, Share2, 
-  DollarSign, CheckSquare, BarChart, Settings, LogOut, Ticket, Bell, TrendingUp, Menu, X
+import {
+  LayoutDashboard, Megaphone, Handshake, MonitorPlay, Calendar, Smile, BookOpen,
+  CheckSquare, BarChart, Settings, LogOut, Ticket, Bell, TrendingUp, Menu, X
 } from 'lucide-react';
 import { useAuth } from '../lib/AuthContext';
 
@@ -13,7 +12,7 @@ const navItems: Array<{
   label: string;
   icon: React.ReactNode;
   adminOnly?: boolean;
-  allowedRoles?: Array<'admin' | 'supervisor' | 'finance'>;
+  allowedRoles?: Array<'admin' | 'supervisor' | 'finance' | 'pic'>;
 }> = [
   { path: '/', label: 'Dashboard', icon: <LayoutDashboard size={20} /> },
   { path: '/campaigns', label: 'Campaigns', icon: <Megaphone size={20} /> },
@@ -21,12 +20,9 @@ const navItems: Array<{
   { path: '/mall-displays', label: 'Displays', icon: <MonitorPlay size={20} /> },
   { path: '/events', label: 'Calendar', icon: <Calendar size={20} /> },
   { path: '/inbox', label: 'Inbox', icon: <Bell size={20} />, allowedRoles: ['admin', 'supervisor'] },
-  { path: '/mascots', label: 'Mascot', icon: <Smile size={20} />, allowedRoles: ['admin', 'supervisor'] },
+  { path: '/mascots', label: 'Mascot', icon: <Smile size={20} />, allowedRoles: ['admin', 'supervisor', 'pic'] },
   { path: '/blog', label: 'Blog', icon: <BookOpen size={20} />, adminOnly: true },
-  { path: '/delivery', label: 'Delivery', icon: <Truck size={20} /> },
   { path: '/vouchers', label: 'Vouchers', icon: <Ticket size={20} /> },
-  { path: '/social', label: 'Social', icon: <Share2 size={20} /> },
-  { path: '/ads', label: 'Ads', icon: <DollarSign size={20} /> },
   { path: '/tasks', label: 'Tasks', icon: <CheckSquare size={20} />, allowedRoles: ['admin', 'supervisor'] },
   { path: '/sales', label: 'Sales', icon: <TrendingUp size={20} />, adminOnly: true },
   { path: '/reports', label: 'Reports', icon: <BarChart size={20} />, adminOnly: true },
@@ -53,6 +49,12 @@ export function Sidebar({
 
     return true;
   });
+  const orderedNavItems = userRole === 'admin'
+    ? [
+        ...visibleNavItems.filter((item) => item.path === '/inbox'),
+        ...visibleNavItems.filter((item) => item.path !== '/inbox')
+      ]
+    : visibleNavItems;
 
   return (
     <>
@@ -88,7 +90,7 @@ export function Sidebar({
         
         <nav className="flex-1 overflow-y-auto px-4 py-4">
           <div className="space-y-1">
-            {visibleNavItems.map((item) => (
+            {orderedNavItems.map((item) => (
               <NavLink
                 key={item.path}
                 to={item.path}

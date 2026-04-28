@@ -152,9 +152,10 @@ export function Mascots() {
   const { user, userData } = useAuth();
   const role = userData?.role;
   const isAdmin = role === 'admin';
-  const isSupervisor = role === 'supervisor';
+  const isSupervisor = role === 'supervisor' || role === 'pic';
   const canRequestMascot = isAdmin || isSupervisor;
   const canLogCondition = isAdmin;
+  const canViewMascotHistory = isAdmin || isSupervisor;
 
   const [activeTab, setActiveTab] = useState<'requests' | 'logs'>('requests');
   const [view, setView] = useState<'default' | 'book' | 'logCondition'>('default');
@@ -243,7 +244,7 @@ export function Mascots() {
   }, [user, userData?.outlet_id, canRequestMascot, isAdmin, isSupervisor]);
 
   useEffect(() => {
-    if (!user) {
+    if (!user || !canViewMascotHistory) {
       setLogs([]);
       setLoadingLogs(false);
       return;
@@ -284,7 +285,7 @@ export function Mascots() {
       isMounted = false;
       void supabase.removeChannel(channel);
     };
-  }, [user]);
+  }, [user, canViewMascotHistory]);
 
   useEffect(() => {
     if (!user || !isAdmin) {

@@ -29,6 +29,8 @@ function RestrictedAccessPanel({
 export function Dashboard() {
   const { user, userData } = useAuth();
   const userRole = userData?.role;
+  const isAdminDashboard = userRole === 'admin';
+  const isSupervisorDashboard = userRole === 'supervisor' || userRole === 'pic';
   const dbData = useDashboardData(user, userRole);
   const access = dbData.access;
   
@@ -192,12 +194,227 @@ export function Dashboard() {
     adhocData.push({ id: 'none', task: 'No pending action items', state: 'solved' });
   }
 
+  if (isSupervisorDashboard) {
+    const supervisorCards = [
+      {
+        id: 'reviews',
+        label: 'Pending Reviews',
+        value: pendingDisplaysTotal + dbData.events.awaiting,
+        helper: 'Displays and events waiting for follow-up.',
+        icon: AlertCircle,
+        iconClass: 'text-amber-600',
+        bgClass: 'bg-amber-50'
+      },
+      {
+        id: 'events',
+        label: 'Upcoming Events',
+        value: upcomingEventsTotal,
+        helper: 'Approved or reviewing calendar items.',
+        icon: Calendar,
+        iconClass: 'text-emerald-600',
+        bgClass: 'bg-emerald-50'
+      },
+      {
+        id: 'displays',
+        label: 'Active Displays',
+        value: dbData.mallDisplays.activeCount,
+        helper: 'Mall display slots currently active.',
+        icon: MonitorPlay,
+        iconClass: 'text-blue-600',
+        bgClass: 'bg-blue-50'
+      },
+      {
+        id: 'campaigns',
+        label: 'Active Campaigns',
+        value: execData.activeCampaigns,
+        helper: 'Campaigns currently in motion.',
+        icon: Megaphone,
+        iconClass: 'text-rose-600',
+        bgClass: 'bg-rose-50'
+      }
+    ];
+
+    const supervisorKpis = kpiData.filter((kpi) => kpi.id === 'displays' || kpi.id === 'events');
+
+    return (
+      <div className="space-y-8 pb-12">
+        <header>
+          <h1 className="text-3xl font-bold tracking-tight text-neutral-900">Supervisor Dashboard</h1>
+          <p className="text-neutral-500 mt-1">
+            Outlet operations view{userData?.outlet_name ? ` for ${userData.outlet_name}` : ''}.
+          </p>
+        </header>
+
+        <motion.section
+          className="space-y-6"
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3 }}
+        >
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold text-neutral-900 flex items-center gap-2">
+              <Activity className="h-5 w-5 text-rose-500" />
+              Today
+            </h2>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+            {supervisorCards.map((card) => {
+              const Icon = card.icon;
+
+              return (
+                <div key={card.id} className="bg-white p-5 rounded-2xl shadow-sm border border-neutral-100 flex flex-col justify-between">
+                  <div className="flex justify-between items-start gap-4">
+                    <div>
+                      <p className="text-sm font-medium text-neutral-500">{card.label}</p>
+                      <h3 className="text-2xl font-bold text-neutral-900 mt-1">{card.value}</h3>
+                    </div>
+                    <div className={`p-2 rounded-lg ${card.bgClass}`}>
+                      <Icon className={`w-5 h-5 ${card.iconClass}`} />
+                    </div>
+                  </div>
+                  <p className="mt-4 text-sm text-neutral-500">{card.helper}</p>
+                </div>
+              );
+            })}
+          </div>
+        </motion.section>
+
+        <motion.section
+          className="space-y-6 pt-4"
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3, delay: 0.1 }}
+        >
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold text-neutral-900 flex items-center gap-2">
+              <CheckSquare className="h-5 w-5 text-fuchsia-500" />
+              Action Queue
+            </h2>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            {actionItems.map((action) => {
+              let colorClasses = '';
+              let IconClass = ChevronRight;
+
+              switch (action.type) {
+                case 'danger':
+                  colorClasses = action.count > 0 ? 'bg-rose-50 border-rose-200 text-rose-700' : 'bg-neutral-50 border-neutral-200 text-neutral-500';
+                  IconClass = action.count > 0 ? XCircle : CheckSquare;
+                  break;
+                case 'warning':
+                  colorClasses = action.count > 0 ? 'bg-amber-50 border-amber-200 text-amber-700' : 'bg-neutral-50 border-neutral-200 text-neutral-500';
+                  IconClass = action.count > 0 ? AlertCircle : CheckSquare;
+                  break;
+                case 'info':
+                  colorClasses = action.count > 0 ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-neutral-50 border-neutral-200 text-neutral-500';
+                  IconClass = action.count > 0 ? Clock : CheckSquare;
+                  break;
+                case 'success':
+                  colorClasses = action.count > 0 ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-neutral-50 border-neutral-200 text-neutral-500';
+                  IconClass = action.count > 0 ? AlertTriangle : CheckSquare;
+                  break;
+              }
+
+              return (
+                <button
+                  key={action.id}
+                  className={`relative overflow-hidden p-5 rounded-2xl shadow-sm border transition-all text-left flex flex-col justify-between group ${
+                    action.count > 0 ? `hover:-translate-y-1 hover:shadow-md ${colorClasses}` : 'opacity-70 bg-neutral-50 border-neutral-100 hover:bg-neutral-100'
+                  }`}
+                >
+                  <div className="flex justify-between items-start w-full mb-4">
+                    <div className={`p-2 rounded-lg bg-white/60 shadow-sm ${action.count > 0 ? '' : 'grayscale'}`}>
+                      <IconClass className="w-5 h-5" />
+                    </div>
+                    <span className={`text-2xl font-bold ${action.count > 0 ? '' : 'text-neutral-400'}`}>
+                      {action.count}
+                    </span>
+                  </div>
+
+                  <p className={`font-semibold tracking-tight ${action.count > 0 ? '' : 'text-neutral-500'}`}>
+                    {action.title}
+                  </p>
+                </button>
+              );
+            })}
+          </div>
+        </motion.section>
+
+        <motion.section
+          className="space-y-6 pt-4"
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3, delay: 0.2 }}
+        >
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold text-neutral-900 flex items-center gap-2">
+              <PieChart className="h-5 w-5 text-indigo-500" />
+              Outlet KPIs
+            </h2>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {supervisorKpis.map((kpi) => {
+              const pct = Math.min((kpi.current / kpi.target) * 100, 100);
+
+              return (
+                <div key={kpi.id} className="bg-white p-5 rounded-2xl shadow-sm border border-neutral-100 hover:border-neutral-200 transition-colors">
+                  <div className="flex items-center justify-between mb-4">
+                    <div className={`p-2 rounded-lg ${kpi.lightBg}`}>
+                      <kpi.icon className={`w-5 h-5 ${kpi.color}`} />
+                    </div>
+                    <div className="text-right">
+                      <p className="text-xl font-bold text-neutral-900 tracking-tight">
+                        {kpi.current.toLocaleString()} <span className="text-sm text-neutral-400 font-medium tracking-normal">/ {kpi.target.toLocaleString()}</span>
+                      </p>
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="text-sm font-medium text-neutral-700 mb-2">{kpi.label}</p>
+                    <div className="w-full bg-neutral-100 rounded-full h-1.5 mb-1.5 overflow-hidden">
+                      <div
+                        className={`h-full rounded-full ${kpi.bg} transition-all duration-1000 ease-out`}
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                    <div className="flex justify-between items-center text-xs text-neutral-500 font-medium">
+                      <span>Progress</span>
+                      <span>{pct.toFixed(0)}%</span>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </motion.section>
+      </div>
+    );
+  }
+
+  if (!isAdminDashboard) {
+    return (
+      <div className="space-y-8 pb-12">
+        <header>
+          <h1 className="text-3xl font-bold tracking-tight text-neutral-900">Dashboard</h1>
+          <p className="text-neutral-500 mt-1">No dashboard view is configured for this role yet.</p>
+        </header>
+        <RestrictedAccessPanel
+          title="Dashboard Restricted"
+          message="Admin, supervisor, and PIC dashboards are the active role-based views."
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-8 pb-12">
       <header>
-        <h1 className="text-3xl font-bold tracking-tight text-neutral-900">Dashboard</h1>
+        <h1 className="text-3xl font-bold tracking-tight text-neutral-900">Admin Dashboard</h1>
         <p className="text-neutral-500 mt-1">
-          Live ops view{userData?.role ? ` for ${userData.role}` : ''}.
+          Admin command view for the full marketing operation.
         </p>
       </header>
       

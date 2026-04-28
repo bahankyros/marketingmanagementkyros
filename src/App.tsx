@@ -21,7 +21,7 @@ import { Vouchers } from './pages/Vouchers';
 import { Tasks } from './pages/Tasks';
 import { Inbox } from './pages/Inbox';
 
-type UserRole = 'admin' | 'supervisor' | 'finance';
+type UserRole = 'admin' | 'supervisor' | 'finance' | 'pic';
 
 const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
   const { user, loading, accessState } = useAuth();
@@ -66,7 +66,7 @@ export default function App() {
             <Route
               path="mascots"
               element={
-                <RoleGuard allowedRoles={['admin', 'supervisor']}>
+                <RoleGuard allowedRoles={['admin', 'supervisor', 'pic']}>
                   <Mascots />
                 </RoleGuard>
               }

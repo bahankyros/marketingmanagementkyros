@@ -2,7 +2,7 @@ import React, { createContext, useContext, useEffect, useState } from 'react';
 import type { User as SupabaseUser } from '@supabase/supabase-js';
 import { supabase } from './supabase';
 
-type UserRole = 'admin' | 'supervisor' | 'finance';
+type UserRole = 'admin' | 'supervisor' | 'finance' | 'pic';
 type UserStatus = 'active' | 'invited' | 'suspended';
 type AccessState = UserStatus | 'not_provisioned';
 const ACCOUNT_NOT_PROVISIONED_MESSAGE = 'Account not provisioned. Please contact an admin.';
@@ -67,7 +67,7 @@ const AuthContext = createContext<AuthContextType>({
 export const useAuth = () => useContext(AuthContext);
 
 function isUserRole(value: unknown): value is UserRole {
-  return value === 'admin' || value === 'supervisor' || value === 'finance';
+  return value === 'admin' || value === 'supervisor' || value === 'finance' || value === 'pic';
 }
 
 function isUserStatus(value: unknown): value is UserStatus {
