@@ -150,9 +150,9 @@ function normalizeLog(row: any): MascotLogRecord {
 
 export function Mascots() {
   const { user, userData } = useAuth();
-  const role = userData?.role;
-  const isAdmin = role === 'admin';
-  const isSupervisor = role === 'supervisor' || role === 'pic';
+  const normalizedRole = userData?.role?.toLowerCase().trim();
+  const isAdmin = normalizedRole === 'admin';
+  const isSupervisor = normalizedRole === 'supervisor' || normalizedRole === 'pic';
   const canRequestMascot = isAdmin || isSupervisor;
   const canLogCondition = isAdmin;
   const canViewMascotHistory = isAdmin || isSupervisor;
