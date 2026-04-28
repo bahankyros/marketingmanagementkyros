@@ -158,7 +158,7 @@ export function DeliveryPromos() {
          <div className="bg-white p-6 rounded-2xl shadow-sm border border-neutral-100 flex items-center justify-between">
             <div>
                <p className="text-sm font-semibold text-neutral-500 uppercase tracking-wider mb-1">Total Sales Generated</p>
-               <p className="text-2xl font-bold text-neutral-900">${totalSales.toLocaleString()}</p>
+               <p className="text-2xl font-bold text-neutral-900">RM {totalSales.toLocaleString()}</p>
             </div>
             <div className="w-12 h-12 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center">
               <TrendingUp className="w-6 h-6" />
@@ -167,7 +167,7 @@ export function DeliveryPromos() {
          <div className="bg-white p-6 rounded-2xl shadow-sm border border-neutral-100 flex items-center justify-between">
             <div>
                <p className="text-sm font-semibold text-neutral-500 uppercase tracking-wider mb-1">Total Spend</p>
-               <p className="text-2xl font-bold text-neutral-900">${totalSpend.toLocaleString()}</p>
+               <p className="text-2xl font-bold text-neutral-900">RM {totalSpend.toLocaleString()}</p>
             </div>
             <div className="w-12 h-12 rounded-full bg-orange-50 text-orange-600 flex items-center justify-center">
               <DollarSign className="w-6 h-6" />
@@ -236,7 +236,7 @@ export function DeliveryPromos() {
                   <div className="bg-neutral-50 p-3 rounded-xl flex justify-between items-center text-sm border border-neutral-100">
                     <div>
                       <p className="text-neutral-500 text-xs">Spend vs Sales</p>
-                      <p className="font-semibold text-neutral-900">${pSpend.toLocaleString()} / <span className="text-emerald-600">${pSales.toLocaleString()}</span></p>
+                      <p className="font-semibold text-neutral-900">RM {pSpend.toLocaleString()} / <span className="text-emerald-600">RM {pSales.toLocaleString()}</span></p>
                     </div>
                     <div className="text-right">
                       <p className="text-neutral-500 text-xs">ROI</p>
@@ -374,11 +374,11 @@ export function DeliveryPromos() {
                     
                     <div className="grid grid-cols-2 gap-4">
                       <div className="space-y-1">
-                        <label className="text-sm font-medium text-neutral-700">Committed Spend ($)</label>
+                        <label className="text-sm font-medium text-neutral-700">Committed Spend (RM)</label>
                         <input type="number" value={editingPromo.spend} onChange={e=>setEditingPromo({...editingPromo, spend: e.target.value})} className="w-full p-2 bg-neutral-50 border border-neutral-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500" />
                       </div>
                       <div className="space-y-1">
-                        <label className="text-sm font-medium text-neutral-700">Sales Generated ($)</label>
+                        <label className="text-sm font-medium text-neutral-700">Sales Generated (RM)</label>
                         <input type="number" value={editingPromo.sales} onChange={e=>setEditingPromo({...editingPromo, sales: e.target.value})} className="w-full p-2 bg-neutral-50 border border-neutral-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500" />
                       </div>
                     </div>

@@ -136,7 +136,7 @@ export function Dashboard() {
     { id: 'mascot', label: 'Mascot Appearances', current: dbData.mascots.appearances, target: dbData.settings.mascotTarget, icon: Smile, color: 'text-rose-500', bg: 'bg-rose-500', lightBg: 'bg-rose-50', visible: access.mascots },
     { id: 'blog', label: 'Blog Features', current: dbData.blogs.published, target: dbData.settings.blogTarget, icon: BookOpen, color: 'text-cyan-500', bg: 'bg-cyan-500', lightBg: 'bg-cyan-50', visible: access.blogs },
     { id: 'social', label: 'Social Content', current: dbData.social.published, target: dbData.settings.socialTarget, icon: Share2, color: 'text-fuchsia-500', bg: 'bg-fuchsia-500', lightBg: 'bg-fuchsia-50', visible: true },
-    { id: 'ads', label: 'Ads Spend', current: dbData.paidAds.spend, target: dbData.settings.adBudget, prefix: '$', icon: DollarSign, color: 'text-violet-500', bg: 'bg-violet-500', lightBg: 'bg-violet-50', visible: true },
+    { id: 'ads', label: 'Ads Spend', current: dbData.paidAds.spend, target: dbData.settings.adBudget, prefix: 'RM ', icon: DollarSign, color: 'text-violet-500', bg: 'bg-violet-500', lightBg: 'bg-violet-50', visible: true },
   ].filter((kpi) => kpi.visible);
 
   // -- Action Center Synthesis --
@@ -222,7 +222,7 @@ export function Dashboard() {
               <div>
                 <p className="text-sm font-medium text-neutral-500">Monthly Sales</p>
                 <h3 className="text-2xl font-bold text-neutral-900 mt-1">
-                  ${execData.lastMonthSales.toLocaleString()}
+                  RM {execData.lastMonthSales.toLocaleString()}
                 </h3>
               </div>
               <div className="p-2 bg-emerald-50 rounded-lg">
@@ -245,7 +245,7 @@ export function Dashboard() {
                     <div className="flex justify-between items-center w-full">
                       <p className="text-sm font-medium text-neutral-500">Budget Used</p>
                       <p className="text-xs font-semibold text-neutral-900 bg-neutral-100 px-2 py-0.5 rounded-full">
-                        ${execData.budgetUsed.toLocaleString()} / ${execData.budgetAvailable.toLocaleString()}
+                        RM {execData.budgetUsed.toLocaleString()} / RM {execData.budgetAvailable.toLocaleString()}
                       </p>
                     </div>
                     <h3 className="text-2xl font-bold text-neutral-900 mt-1">
@@ -449,7 +449,7 @@ export function Dashboard() {
                           {outlet.name}
                         </td>
                         <td className="px-6 py-4 text-right font-medium text-neutral-700">
-                          ${outlet.sales.toLocaleString()}
+                          RM {outlet.sales.toLocaleString()}
                         </td>
                         <td className="px-6 py-4 text-center">
                           <span className="inline-flex items-center justify-center bg-neutral-100 text-neutral-700 rounded-full w-7 h-7 text-xs font-semibold">
@@ -478,7 +478,7 @@ export function Dashboard() {
                    </div>
                    <ArrowDownRight className="text-rose-500 w-5 h-5" />
                  </div>
-                 <p className="text-sm text-neutral-500">${lowestPerforming?.sales.toLocaleString() || '0'} this cycle. Needs action.</p>
+                 <p className="text-sm text-neutral-500">RM {lowestPerforming?.sales.toLocaleString() || '0'} this cycle. Needs action.</p>
               </div>
               
               <div className="bg-white p-5 rounded-2xl shadow-sm border border-neutral-100 flex items-center justify-between">

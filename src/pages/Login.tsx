@@ -115,7 +115,7 @@ export function Login() {
             <LayoutDashboard size={32} />
           </div>
           <h1 className="text-[36px] font-bold leading-[44px] tracking-[-0.25px] text-[#000000] sm:text-[45px] sm:leading-[52px]">
-            Ops Control Center
+            Marketing Control Centre
           </h1>
           <p className="mt-3 text-[14px] font-normal leading-5 tracking-[0.25px] text-[#444746] sm:text-[16px] sm:leading-6 sm:tracking-[0.5px]">
             Sign in with your work email.

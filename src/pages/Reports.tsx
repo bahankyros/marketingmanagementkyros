@@ -217,7 +217,7 @@ export function Reports() {
            <div>
              <p className="text-xs font-semibold uppercase text-neutral-500 mb-1 tracking-wider">Avg Cost Per Redemption</p>
              <div className="flex items-center gap-2">
-                <p className="text-2xl font-bold text-amber-600">${voucherData.costPerRedemption.toFixed(2)}</p>
+                <p className="text-2xl font-bold text-amber-600">RM {voucherData.costPerRedemption.toFixed(2)}</p>
                 <DollarSign className="w-5 h-5 text-amber-400" />
              </div>
            </div>

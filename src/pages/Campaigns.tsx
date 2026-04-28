@@ -824,7 +824,7 @@ export function Campaigns() {
                       <input type="date" value={formData.endDate} onChange={e => setFormData({...formData, endDate: e.target.value})} className="w-full p-2.5 bg-neutral-50 border border-neutral-200 rounded-lg outline-none focus:ring-2 focus:ring-rose-500 transition-all text-neutral-900" />
                    </div>
                    <div className="space-y-1">
-                      <label className="text-sm font-medium text-neutral-700">Budget ($)</label>
+                      <label className="text-sm font-medium text-neutral-700">Budget (RM)</label>
                       <input type="number" value={formData.budget} onChange={e => setFormData({...formData, budget: e.target.value})} className="w-full p-2.5 bg-neutral-50 border border-neutral-200 rounded-lg outline-none focus:ring-2 focus:ring-rose-500 transition-all text-neutral-900" placeholder="e.g. 5000" />
                    </div>
                    <div className="space-y-1">
@@ -997,7 +997,7 @@ export function Campaigns() {
                   </div>
                   <div>
                     <p className="text-xs text-neutral-500 font-semibold uppercase mb-1">Allocated Budget</p>
-                    <p className="text-lg font-bold text-rose-600">${selectedCampaignBudget.toLocaleString()}</p>
+                    <p className="text-lg font-bold text-rose-600">RM {selectedCampaignBudget.toLocaleString()}</p>
                   </div>
                </div>
             </div>
@@ -1179,7 +1179,7 @@ export function Campaigns() {
 
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-1">
-                      <label className="text-sm font-medium text-neutral-700">Budget ($)</label>
+                      <label className="text-sm font-medium text-neutral-700">Budget (RM)</label>
                       <input
                         type="number"
                         min="0"

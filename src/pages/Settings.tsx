@@ -1239,8 +1239,8 @@ export function Settings() {
     { key: 'mascotTarget', label: 'Weekly Mascot Appearances', icon: Smile, color: 'text-rose-500' },
     { key: 'blogTarget', label: 'Blog Features Target', icon: BookOpen, color: 'text-cyan-500' },
     { key: 'socialTarget', label: 'Monthly Social Target', icon: Share2, color: 'text-fuchsia-500' },
-    { key: 'adBudget', label: 'Ad Spend Budget ($)', icon: DollarSign, color: 'text-violet-500' },
-    { key: 'totalMarketingBudget', label: 'Total Marketing Budget ($)', icon: DollarSign, color: 'text-rose-600' },
+    { key: 'adBudget', label: 'Ad Spend Budget (RM)', icon: DollarSign, color: 'text-violet-500' },
+    { key: 'totalMarketingBudget', label: 'Total Marketing Budget (RM)', icon: DollarSign, color: 'text-rose-600' },
   ];
 
   return (
@@ -1343,7 +1343,7 @@ export function Settings() {
                       </div>
                       <div>
                         <p className="font-bold text-neutral-900">{outlet.name}</p>
-                        <p className="text-xs text-neutral-500">Base sales: ${Number(outlet.baseSales).toLocaleString()}</p>
+                        <p className="text-xs text-neutral-500">Base sales: RM {Number(outlet.baseSales).toLocaleString()}</p>
                       </div>
                    </div>
                    {canManageSettings && (

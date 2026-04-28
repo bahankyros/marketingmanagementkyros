@@ -281,7 +281,7 @@ export function Partnerships() {
                         </div>
                         <div className="flex justify-between items-center text-[10px] mt-2">
                            <span className="text-neutral-500">Rate: <strong className="text-neutral-900">{pRedemptionRate}%</strong></span>
-                           <span className="text-emerald-600 font-semibold">+${Number(p.revenueGenerated || 0).toLocaleString()} Rev</span>
+                           <span className="text-emerald-600 font-semibold">+RM {Number(p.revenueGenerated || 0).toLocaleString()} Rev</span>
                         </div>
                       </div>
                     </div>
@@ -448,11 +448,11 @@ export function Partnerships() {
 
                     <div className="grid grid-cols-2 gap-4 mt-2">
                        <div className="space-y-1">
-                        <label className="text-sm font-medium text-neutral-700">Revenue ($)</label>
+                        <label className="text-sm font-medium text-neutral-700">Revenue (RM)</label>
                         <input type="number" value={editingPartnership.revenueGenerated || 0} onChange={e=>setEditingPartnership({...editingPartnership, revenueGenerated: e.target.value})} className="w-full p-2 bg-emerald-50 border border-emerald-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500 text-emerald-700 font-bold" />
                       </div>
                       <div className="space-y-1">
-                        <label className="text-sm font-medium text-neutral-700">Cost/Redemption ($)</label>
+                        <label className="text-sm font-medium text-neutral-700">Cost/Redemption (RM)</label>
                         <input type="number" value={editingPartnership.costPerRedemption || 0} onChange={e=>setEditingPartnership({...editingPartnership, costPerRedemption: e.target.value})} className="w-full p-2 bg-neutral-50 border border-neutral-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500" />
                       </div>
                     </div>

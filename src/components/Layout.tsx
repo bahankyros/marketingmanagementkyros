@@ -71,9 +71,9 @@ export function Sidebar({
         <div className="border-b border-[#c4c7c5] px-6 py-6">
           <div className="flex items-start justify-between gap-4">
             <div>
-              <p className="text-[11px] font-medium uppercase tracking-[0.5px] text-[#444746]">Modernist F&B Operations</p>
+              <p className="text-[11px] font-medium uppercase tracking-[0.5px] text-[#444746]">Kyros Marketing Management</p>
               <h1 className="mt-2 text-[22px] font-semibold leading-7 text-[#000000]">
-                Ops Control Center
+                Marketing Control Centre
               </h1>
             </div>
             <button
@@ -143,8 +143,8 @@ export function Layout() {
         <header className="sticky top-0 z-30 border-b border-[#c4c7c5] bg-[#f9f9f9]/95 backdrop-blur-sm lg:hidden">
           <div className="flex items-center justify-between px-4 py-4 sm:px-6">
             <div>
-              <p className="text-[11px] font-medium uppercase tracking-[0.5px] text-[#444746]">Modernist F&B Operations</p>
-              <h2 className="text-[16px] font-semibold leading-6 tracking-[0.15px] text-[#000000]">Ops Control Center</h2>
+              <p className="text-[11px] font-medium uppercase tracking-[0.5px] text-[#444746]">Kyros Marketing Management</p>
+              <h2 className="text-[16px] font-semibold leading-6 tracking-[0.15px] text-[#000000]">Marketing Control Centre</h2>
             </div>
             <button
               type="button"

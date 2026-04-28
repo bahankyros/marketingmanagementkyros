@@ -546,7 +546,7 @@ export function Mascots() {
               <Smile className="w-10 h-10 text-rose-500" />
             </div>
             <div>
-              <h2 className="text-2xl font-bold text-neutral-900 leading-tight mb-1">"Bitey" The Kebab</h2>
+              <h2 className="text-2xl font-bold text-neutral-900 leading-tight mb-1">Kyros Mascot</h2>
               <div className="flex flex-wrap items-center gap-2 mt-2">
                 <span className={`flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-full ${
                   currentAssetStatus === 'Available' ? 'bg-emerald-100 text-emerald-700'

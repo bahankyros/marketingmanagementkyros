@@ -145,11 +145,11 @@ export function PaidAds() {
   
   const metaSpend = metaAds.reduce((sum, a) => sum + (Number(a.spend) || 0), 0);
   const metaResults = metaAds.reduce((sum, a) => sum + (Number(a.results) || 0), 0);
-  const metaCpa = metaResults > 0 ? '$' + (metaSpend / metaResults).toFixed(2) : 'N/A';
+  const metaCpa = metaResults > 0 ? 'RM ' + (metaSpend / metaResults).toFixed(2) : 'N/A';
 
   const tiktokSpend = tiktokAds.reduce((sum, a) => sum + (Number(a.spend) || 0), 0);
   const tiktokResults = tiktokAds.reduce((sum, a) => sum + (Number(a.results) || 0), 0);
-  const tiktokCpa = tiktokResults > 0 ? '$' + (tiktokSpend / tiktokResults).toFixed(2) : 'N/A';
+  const tiktokCpa = tiktokResults > 0 ? 'RM ' + (tiktokSpend / tiktokResults).toFixed(2) : 'N/A';
 
 
   return (
@@ -171,7 +171,7 @@ export function PaidAds() {
            <div className="flex justify-between items-center mb-4">
               <div>
                  <p className="text-sm font-semibold text-neutral-500 uppercase tracking-wider">Total Monthly Spend</p>
-                 <p className="text-2xl font-bold text-neutral-900 mt-1">${totalSpend.toLocaleString()} <span className="text-sm font-medium text-neutral-400">/ ${monthlyBudget}</span></p>
+                 <p className="text-2xl font-bold text-neutral-900 mt-1">RM {totalSpend.toLocaleString()} <span className="text-sm font-medium text-neutral-400">/ RM {monthlyBudget}</span></p>
               </div>
               <div className="w-12 h-12 rounded-full bg-violet-50 flex items-center justify-center text-violet-600 shrink-0">
                 <DollarSign className="w-6 h-6" />
@@ -246,9 +246,9 @@ export function PaidAds() {
                            </span>
                         </td>
                         <td className="px-6 py-4 text-sm font-medium text-neutral-700">{ad.objective}</td>
-                        <td className="px-6 py-4 text-right font-medium text-neutral-900">${Number(ad.spend || 0).toLocaleString()}</td>
+                        <td className="px-6 py-4 text-right font-medium text-neutral-900">RM {Number(ad.spend || 0).toLocaleString()}</td>
                         <td className="px-6 py-4 text-right">
-                           <p className="text-sm font-bold text-neutral-700">${cpr}</p>
+                           <p className="text-sm font-bold text-neutral-700">RM {cpr}</p>
                            <p className="text-[10px] text-neutral-400 capitalize">{ad.results} {ad.resultType || 'Results'}</p>
                         </td>
                         <td className="px-6 py-4 text-right">
@@ -325,7 +325,7 @@ export function PaidAds() {
                   </div>
                   
                   <div className="pt-4 border-t border-neutral-100">
-                     <h4 className="font-semibold text-neutral-900 mb-3 text-sm">Current Performance ($)</h4>
+                     <h4 className="font-semibold text-neutral-900 mb-3 text-sm">Current Performance (RM)</h4>
                      <div className="grid grid-cols-2 gap-4">
                        <div className="space-y-1">
                          <label className="text-sm font-medium text-neutral-700">Spend</label>
@@ -401,7 +401,7 @@ export function PaidAds() {
                   
                   <div className="grid grid-cols-2 gap-4">
                      <div className="space-y-1">
-                        <label className="text-sm font-medium text-neutral-700">Spend ($)</label>
+                        <label className="text-sm font-medium text-neutral-700">Spend (RM)</label>
                         <input type="number" required value={editingAd.spend} onChange={e=>setEditingAd({...editingAd, spend: e.target.value})} className="w-full p-2 bg-neutral-50 border border-neutral-200 rounded-lg outline-none focus:ring-2 focus:ring-violet-500 font-bold" />
                      </div>
                      <div className="space-y-1">
@@ -440,7 +440,7 @@ export function PaidAds() {
                            <p className="text-xs text-neutral-500 mb-0.5">Cost per Result (CPA/CPC)</p>
                            <p className="text-lg font-bold text-neutral-900">
                               {(Number(editingAd.spend) && Number(editingAd.results)) 
-                                 ? '$' + (Number(editingAd.spend) / Number(editingAd.results)).toFixed(2)
+                                 ? 'RM ' + (Number(editingAd.spend) / Number(editingAd.results)).toFixed(2)
                                  : 'N/A'
                               }
                            </p>
