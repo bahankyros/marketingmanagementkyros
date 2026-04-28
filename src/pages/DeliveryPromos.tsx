@@ -1,7 +1,9 @@
-import React, { useMemo, useState } from 'react';
+import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'motion/react';
+import * as Papa from 'papaparse';
 import {
   Activity,
+  AlertCircle,
   BarChart3,
   Calendar,
   CheckCircle2,
@@ -10,7 +12,8 @@ import {
   Filter,
   PieChart,
   TrendingUp,
-  Truck
+  Truck,
+  Upload
 } from 'lucide-react';
 import {
   CartesianGrid,
@@ -22,19 +25,27 @@ import {
   XAxis,
   YAxis
 } from 'recharts';
+import { supabase } from '../lib/supabase';
+import { nowIso, subscribeToTable } from '../lib/supabaseData';
 
 type Platform = 'GrabFood' | 'Foodpanda' | 'ShopeeFood';
 type PlatformFilter = 'All Platforms' | Platform;
 type PromoStatus = 'Planning' | 'Running' | 'Completed' | 'Paused';
 
-type DeliveryPromoRecord = {
+type DeliveryCampaignRecord = {
   id: string;
-  monthKey: string;
+  monthYear: string;
   platform: Platform;
-  promoName: string;
+  campaignName: string;
   spend: number;
   revenue: number;
   status: PromoStatus;
+};
+
+type ParsedGrabCampaign = {
+  campaignName: string;
+  spend: number;
+  sales: number;
 };
 
 type PlatformSummary = {
@@ -44,8 +55,42 @@ type PlatformSummary = {
   roi: number;
 };
 
+type UploadFeedback = {
+  tone: 'success' | 'error';
+  message: string;
+} | null;
+
 const PLATFORMS: Platform[] = ['GrabFood', 'Foodpanda', 'ShopeeFood'];
 const PLATFORM_FILTERS: PlatformFilter[] = ['All Platforms', ...PLATFORMS];
+
+const CSV_COLUMN_CANDIDATES = {
+  campaignName: [
+    'Campaign Name',
+    'Campaign',
+    'Campaign Title',
+    'Promo Name',
+    'Promotion Name',
+    'Ad Name',
+    'Name'
+  ],
+  spend: [
+    'Spend',
+    'Ad Spend',
+    'Amount Spent',
+    'Cost',
+    'Spend (RM)',
+    'Marketing Spend'
+  ],
+  sales: [
+    'Sales',
+    'Revenue',
+    'Sales Generated',
+    'Gross Sales',
+    'Sales Value',
+    'Order Revenue',
+    'Conversion Value'
+  ]
+};
 
 const platformStyles: Record<Platform, { dot: string; text: string; bg: string; bar: string }> = {
   GrabFood: {
@@ -68,29 +113,19 @@ const platformStyles: Record<Platform, { dot: string; text: string; bg: string; 
   }
 };
 
-const MOCK_PROMOS: DeliveryPromoRecord[] = [
-  { id: 'nov-grab-1', monthKey: '2025-11', platform: 'GrabFood', promoName: '11.11 Combo Push', spend: 4200, revenue: 23800, status: 'Completed' },
-  { id: 'nov-foodpanda-1', monthKey: '2025-11', platform: 'Foodpanda', promoName: 'Weekend Value Meals', spend: 3600, revenue: 19600, status: 'Completed' },
-  { id: 'nov-shopee-1', monthKey: '2025-11', platform: 'ShopeeFood', promoName: 'New User Delivery Deal', spend: 2900, revenue: 14200, status: 'Completed' },
-  { id: 'dec-grab-1', monthKey: '2025-12', platform: 'GrabFood', promoName: 'Year End Feast', spend: 5300, revenue: 30100, status: 'Completed' },
-  { id: 'dec-foodpanda-1', monthKey: '2025-12', platform: 'Foodpanda', promoName: 'Holiday Lunch Boost', spend: 4100, revenue: 22100, status: 'Completed' },
-  { id: 'dec-shopee-1', monthKey: '2025-12', platform: 'ShopeeFood', promoName: 'Free Delivery Stack', spend: 3400, revenue: 18100, status: 'Completed' },
-  { id: 'jan-grab-1', monthKey: '2026-01', platform: 'GrabFood', promoName: 'New Year Meal Sets', spend: 4700, revenue: 26400, status: 'Completed' },
-  { id: 'jan-foodpanda-1', monthKey: '2026-01', platform: 'Foodpanda', promoName: 'Weekday Office Lunch', spend: 3900, revenue: 21300, status: 'Completed' },
-  { id: 'jan-shopee-1', monthKey: '2026-01', platform: 'ShopeeFood', promoName: 'Shopee Coins Bundle', spend: 3200, revenue: 15900, status: 'Completed' },
-  { id: 'feb-grab-1', monthKey: '2026-02', platform: 'GrabFood', promoName: 'Family Sharing Deals', spend: 4900, revenue: 28700, status: 'Completed' },
-  { id: 'feb-foodpanda-1', monthKey: '2026-02', platform: 'Foodpanda', promoName: 'Payday Voucher Burst', spend: 4400, revenue: 24900, status: 'Completed' },
-  { id: 'feb-shopee-1', monthKey: '2026-02', platform: 'ShopeeFood', promoName: 'Snack Hour Push', spend: 3000, revenue: 15400, status: 'Completed' },
-  { id: 'mar-grab-1', monthKey: '2026-03', platform: 'GrabFood', promoName: 'Ramadan Dinner Slots', spend: 6100, revenue: 37400, status: 'Completed' },
-  { id: 'mar-foodpanda-1', monthKey: '2026-03', platform: 'Foodpanda', promoName: 'Iftar Bundle Promo', spend: 5600, revenue: 31900, status: 'Completed' },
-  { id: 'mar-shopee-1', monthKey: '2026-03', platform: 'ShopeeFood', promoName: 'Sahur Saver', spend: 3700, revenue: 20100, status: 'Completed' },
-  { id: 'apr-grab-1', monthKey: '2026-04', platform: 'GrabFood', promoName: 'Raya Combo Sets', spend: 6800, revenue: 42100, status: 'Running' },
-  { id: 'apr-grab-2', monthKey: '2026-04', platform: 'GrabFood', promoName: 'Lunch Hour Top-Up', spend: 2400, revenue: 13200, status: 'Running' },
-  { id: 'apr-foodpanda-1', monthKey: '2026-04', platform: 'Foodpanda', promoName: 'Panda Picks Bundle', spend: 5200, revenue: 29700, status: 'Running' },
-  { id: 'apr-foodpanda-2', monthKey: '2026-04', platform: 'Foodpanda', promoName: 'Outlet Hero Voucher', spend: 1700, revenue: 8400, status: 'Planning' },
-  { id: 'apr-shopee-1', monthKey: '2026-04', platform: 'ShopeeFood', promoName: 'ShopeeFood Mega Day', spend: 4100, revenue: 22600, status: 'Running' },
-  { id: 'apr-shopee-2', monthKey: '2026-04', platform: 'ShopeeFood', promoName: 'Weekend Flash Delivery', spend: 1500, revenue: 6100, status: 'Paused' }
-];
+function getCurrentMonthKey() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function buildMonthOptions(count: number) {
+  const now = new Date();
+
+  return Array.from({ length: count }, (_, index) => {
+    const date = new Date(now.getFullYear(), now.getMonth() - (count - 1 - index), 1);
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+  });
+}
 
 function formatMonthLabel(monthKey: string) {
   const [year, month] = monthKey.split('-').map(Number);
@@ -116,8 +151,7 @@ function getSixMonthKeys(selectedMonth: string) {
 
   return Array.from({ length: 6 }, (_, index) => {
     const date = new Date(cursor.getFullYear(), cursor.getMonth() - (5 - index), 1);
-    const normalizedMonth = String(date.getMonth() + 1).padStart(2, '0');
-    return `${date.getFullYear()}-${normalizedMonth}`;
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
   });
 }
 
@@ -134,7 +168,114 @@ function getStatusTone(status: PromoStatus) {
   }
 }
 
-function summarizeByPlatform(records: DeliveryPromoRecord[]): PlatformSummary[] {
+function normalizePlatform(value: unknown): Platform {
+  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+
+  if (normalized === 'foodpanda') return 'Foodpanda';
+  if (normalized === 'shopeefood' || normalized === 'shopee food') return 'ShopeeFood';
+  return 'GrabFood';
+}
+
+function normalizeStatus(value: unknown): PromoStatus {
+  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+
+  if (normalized === 'planning') return 'Planning';
+  if (normalized === 'completed' || normalized === 'complete' || normalized === 'ended') return 'Completed';
+  if (normalized === 'paused') return 'Paused';
+  return 'Running';
+}
+
+function normalizeCampaign(row: any): DeliveryCampaignRecord {
+  return {
+    id: typeof row.id === 'string' ? row.id : `${row.month_year || 'unknown'}-${row.campaign_name || Math.random()}`,
+    monthYear: typeof row.month_year === 'string' ? row.month_year : '',
+    platform: normalizePlatform(row.platform),
+    campaignName: typeof row.campaign_name === 'string' ? row.campaign_name : '',
+    spend: Number(row.spend || 0),
+    revenue: Number(row.sales ?? row.revenue ?? 0),
+    status: normalizeStatus(row.status)
+  };
+}
+
+function normalizeHeader(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function findCsvColumn(headers: string[], candidates: string[]) {
+  const normalizedHeaders = headers.map((header) => ({
+    original: header,
+    normalized: normalizeHeader(header)
+  }));
+
+  for (const candidate of candidates) {
+    const normalizedCandidate = normalizeHeader(candidate);
+    const exactMatch = normalizedHeaders.find((header) => header.normalized === normalizedCandidate);
+    if (exactMatch) return exactMatch.original;
+  }
+
+  for (const candidate of candidates) {
+    const normalizedCandidate = normalizeHeader(candidate);
+    const looseMatch = normalizedHeaders.find((header) => header.normalized.includes(normalizedCandidate));
+    if (looseMatch) return looseMatch.original;
+  }
+
+  return '';
+}
+
+function parseMoney(value: unknown) {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? Math.max(value, 0) : 0;
+  }
+
+  if (typeof value !== 'string') return 0;
+
+  const trimmed = value.trim();
+  const isNegative = trimmed.startsWith('(') && trimmed.endsWith(')');
+  const parsed = Number(trimmed.replace(/[^\d.-]/g, ''));
+
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.max(isNegative ? -parsed : parsed, 0);
+}
+
+function parseGrabCsv(file: File) {
+  return new Promise<ParsedGrabCampaign[]>((resolve, reject) => {
+    Papa.parse<Record<string, string>>(file, {
+      header: true,
+      skipEmptyLines: true,
+      complete: (result) => {
+        const headers = (result.meta.fields || []).filter(Boolean);
+        const campaignNameColumn = findCsvColumn(headers, CSV_COLUMN_CANDIDATES.campaignName);
+        const spendColumn = findCsvColumn(headers, CSV_COLUMN_CANDIDATES.spend);
+        const salesColumn = findCsvColumn(headers, CSV_COLUMN_CANDIDATES.sales);
+
+        if (!campaignNameColumn || !spendColumn || !salesColumn) {
+          reject(new Error('CSV must include Campaign Name, Spend, and Sales or Revenue columns.'));
+          return;
+        }
+
+        const parsedRows = result.data
+          .map((row) => ({
+            campaignName: String(row[campaignNameColumn] || '').trim(),
+            spend: parseMoney(row[spendColumn]),
+            sales: parseMoney(row[salesColumn])
+          }))
+          .filter((row) => row.campaignName);
+
+        if (parsedRows.length === 0) {
+          reject(new Error('No campaign rows found in the uploaded CSV.'));
+          return;
+        }
+
+        resolve(parsedRows);
+      },
+      error: (error) => {
+        reject(error);
+      }
+    });
+  });
+}
+
+function summarizeByPlatform(records: DeliveryCampaignRecord[]): PlatformSummary[] {
   return PLATFORMS.map((platform) => {
     const platformRecords = records.filter((record) => record.platform === platform);
     const spend = platformRecords.reduce((sum, record) => sum + record.spend, 0);
@@ -188,46 +329,79 @@ function PlatformBreakdown({
 }
 
 export function DeliveryPromos() {
-  const monthOptions = useMemo(
-    () => Array.from(new Set(MOCK_PROMOS.map((promo) => promo.monthKey))).sort(),
-    []
-  );
-  const [selectedMonth, setSelectedMonth] = useState(monthOptions[monthOptions.length - 1]);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const monthOptions = useMemo(() => buildMonthOptions(12), []);
+  const [selectedMonth, setSelectedMonth] = useState(getCurrentMonthKey);
   const [activePlatform, setActivePlatform] = useState<PlatformFilter>('All Platforms');
+  const [campaigns, setCampaigns] = useState<DeliveryCampaignRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [uploading, setUploading] = useState(false);
+  const [feedback, setFeedback] = useState<UploadFeedback>(null);
 
-  const selectedMonthPromos = useMemo(
-    () => MOCK_PROMOS.filter((promo) => promo.monthKey === selectedMonth),
-    [selectedMonth]
+  const loadCampaigns = useCallback(async () => {
+    setLoading(true);
+    const monthKeys = getSixMonthKeys(selectedMonth);
+    const { data, error } = await supabase
+      .from('delivery_campaigns')
+      .select('*')
+      .in('month_year', monthKeys)
+      .order('month_year', { ascending: true });
+
+    if (error) {
+      console.error('Error loading delivery campaigns:', error);
+      setFeedback({ tone: 'error', message: 'Failed to load delivery campaign data.' });
+      setCampaigns([]);
+      setLoading(false);
+      return;
+    }
+
+    setCampaigns((data || []).map(normalizeCampaign));
+    setLoading(false);
+  }, [selectedMonth]);
+
+  useEffect(() => {
+    void loadCampaigns();
+
+    const unsubscribe = subscribeToTable('delivery-campaigns-page', 'delivery_campaigns', () => {
+      void loadCampaigns();
+    });
+
+    return () => unsubscribe();
+  }, [loadCampaigns]);
+
+  const selectedMonthCampaigns = useMemo(
+    () => campaigns.filter((campaign) => campaign.monthYear === selectedMonth),
+    [campaigns, selectedMonth]
   );
 
-  const visiblePromos = useMemo(
-    () => selectedMonthPromos.filter((promo) => activePlatform === 'All Platforms' || promo.platform === activePlatform),
-    [activePlatform, selectedMonthPromos]
+  const visibleCampaigns = useMemo(
+    () => selectedMonthCampaigns.filter((campaign) => activePlatform === 'All Platforms' || campaign.platform === activePlatform),
+    [activePlatform, selectedMonthCampaigns]
   );
 
   const platformSummaries = useMemo(
-    () => summarizeByPlatform(selectedMonthPromos),
-    [selectedMonthPromos]
+    () => summarizeByPlatform(selectedMonthCampaigns),
+    [selectedMonthCampaigns]
   );
 
   const totals = useMemo(() => {
-    const spend = selectedMonthPromos.reduce((sum, promo) => sum + promo.spend, 0);
-    const revenue = selectedMonthPromos.reduce((sum, promo) => sum + promo.revenue, 0);
+    const spend = selectedMonthCampaigns.reduce((sum, campaign) => sum + campaign.spend, 0);
+    const revenue = selectedMonthCampaigns.reduce((sum, campaign) => sum + campaign.revenue, 0);
 
     return {
       spend,
       revenue,
       roi: calculateRoi(revenue, spend)
     };
-  }, [selectedMonthPromos]);
+  }, [selectedMonthCampaigns]);
 
   const chartData = useMemo(() => {
     return getSixMonthKeys(selectedMonth).map((monthKey) => {
-      const monthRecords = MOCK_PROMOS.filter((promo) => {
-        return promo.monthKey === monthKey && (activePlatform === 'All Platforms' || promo.platform === activePlatform);
+      const monthRecords = campaigns.filter((campaign) => {
+        return campaign.monthYear === monthKey && (activePlatform === 'All Platforms' || campaign.platform === activePlatform);
       });
-      const spend = monthRecords.reduce((sum, promo) => sum + promo.spend, 0);
-      const revenue = monthRecords.reduce((sum, promo) => sum + promo.revenue, 0);
+      const spend = monthRecords.reduce((sum, campaign) => sum + campaign.spend, 0);
+      const revenue = monthRecords.reduce((sum, campaign) => sum + campaign.revenue, 0);
 
       return {
         month: formatMonthLabel(monthKey),
@@ -235,18 +409,60 @@ export function DeliveryPromos() {
         revenue
       };
     });
-  }, [activePlatform, selectedMonth]);
+  }, [activePlatform, campaigns, selectedMonth]);
 
   const filteredTotals = useMemo(() => {
-    const spend = visiblePromos.reduce((sum, promo) => sum + promo.spend, 0);
-    const revenue = visiblePromos.reduce((sum, promo) => sum + promo.revenue, 0);
+    const spend = visibleCampaigns.reduce((sum, campaign) => sum + campaign.spend, 0);
+    const revenue = visibleCampaigns.reduce((sum, campaign) => sum + campaign.revenue, 0);
 
     return {
       spend,
       revenue,
       roi: calculateRoi(revenue, spend)
     };
-  }, [visiblePromos]);
+  }, [visibleCampaigns]);
+
+  const handleCsvUpload = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setUploading(true);
+    setFeedback(null);
+
+    try {
+      const parsedRows = await parseGrabCsv(file);
+      const timestamp = nowIso();
+      const payload = parsedRows.map((row) => ({
+        platform: 'GrabFood',
+        campaign_name: row.campaignName,
+        spend: row.spend,
+        sales: row.sales,
+        month_year: selectedMonth,
+        status: 'Running',
+        created_at: timestamp,
+        updated_at: timestamp
+      }));
+
+      const { error } = await supabase
+        .from('delivery_campaigns')
+        .insert(payload);
+
+      if (error) throw error;
+
+      setFeedback({
+        tone: 'success',
+        message: `Imported ${payload.length} GrabFood campaign${payload.length === 1 ? '' : 's'} for ${formatMonthLabel(selectedMonth)}.`
+      });
+      await loadCampaigns();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to import Grab CSV.';
+      console.error('Error importing Grab delivery CSV:', error);
+      setFeedback({ tone: 'error', message });
+    } finally {
+      setUploading(false);
+      event.target.value = '';
+    }
+  };
 
   return (
     <div className="space-y-8 pb-12">
@@ -258,7 +474,7 @@ export function DeliveryPromos() {
           </div>
           <h1 className="text-3xl font-bold tracking-tight text-neutral-900">Delivery Marketing Dashboard</h1>
           <p className="mt-1 text-neutral-500">
-            Mock performance view for GrabFood, Foodpanda, and ShopeeFood before Supabase wiring.
+            Live campaign performance for GrabFood, Foodpanda, and ShopeeFood.
           </p>
         </div>
 
@@ -279,8 +495,35 @@ export function DeliveryPromos() {
               </option>
             ))}
           </select>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".csv,text/csv"
+            onChange={handleCsvUpload}
+            className="hidden"
+          />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploading}
+            className="inline-flex items-center justify-center gap-2 rounded-xl border border-orange-200 bg-orange-50 px-4 py-2.5 text-sm font-bold text-orange-700 transition-colors hover:bg-orange-100 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {uploading ? <CircleDashed className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+            {uploading ? 'Uploading...' : 'Upload Grab Data (CSV)'}
+          </button>
         </div>
       </header>
+
+      {feedback && (
+        <div className={`flex items-start gap-3 rounded-2xl border px-4 py-3 text-sm font-medium ${
+          feedback.tone === 'success'
+            ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+            : 'border-rose-200 bg-rose-50 text-rose-700'
+        }`}>
+          {feedback.tone === 'success' ? <CheckCircle2 className="mt-0.5 h-4 w-4" /> : <AlertCircle className="mt-0.5 h-4 w-4" />}
+          <span>{feedback.message}</span>
+        </div>
+      )}
 
       <section className="flex flex-wrap gap-2">
         {PLATFORM_FILTERS.map((platform) => (
@@ -460,7 +703,7 @@ export function DeliveryPromos() {
             </p>
           </div>
           <span className="rounded-full bg-neutral-100 px-3 py-1 text-xs font-bold text-neutral-600">
-            {visiblePromos.length} campaigns
+            {visibleCampaigns.length} campaigns
           </span>
         </div>
 
@@ -477,36 +720,50 @@ export function DeliveryPromos() {
               </tr>
             </thead>
             <tbody className="divide-y divide-neutral-100">
-              {visiblePromos.map((promo) => {
-                const roi = calculateRoi(promo.revenue, promo.spend);
-                const style = platformStyles[promo.platform];
+              {loading ? (
+                <tr>
+                  <td colSpan={6} className="px-6 py-12 text-center text-neutral-500">
+                    Loading delivery campaigns...
+                  </td>
+                </tr>
+              ) : visibleCampaigns.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="px-6 py-12 text-center text-neutral-500">
+                    No delivery campaigns found for this filter.
+                  </td>
+                </tr>
+              ) : (
+                visibleCampaigns.map((campaign) => {
+                  const roi = calculateRoi(campaign.revenue, campaign.spend);
+                  const style = platformStyles[campaign.platform];
 
-                return (
-                  <tr key={promo.id} className="transition-colors hover:bg-neutral-50">
-                    <td className="px-6 py-4">
-                      <span className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-bold ${style.bg} ${style.text}`}>
-                        <span className={`h-2 w-2 rounded-full ${style.dot}`} />
-                        {promo.platform}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4">
-                      <p className="font-semibold text-neutral-900">{promo.promoName}</p>
-                      <p className="mt-1 text-xs text-neutral-500">{formatMonthLabel(promo.monthKey)}</p>
-                    </td>
-                    <td className="px-6 py-4 text-right font-medium text-neutral-700">{formatCurrency(promo.spend)}</td>
-                    <td className="px-6 py-4 text-right font-medium text-neutral-900">{formatCurrency(promo.revenue)}</td>
-                    <td className={`px-6 py-4 text-right font-bold ${roi >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
-                      {roi.toFixed(0)}%
-                    </td>
-                    <td className="px-6 py-4 text-center">
-                      <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-bold ${getStatusTone(promo.status)}`}>
-                        {promo.status === 'Running' ? <CheckCircle2 className="h-3.5 w-3.5" /> : <CircleDashed className="h-3.5 w-3.5" />}
-                        {promo.status}
-                      </span>
-                    </td>
-                  </tr>
-                );
-              })}
+                  return (
+                    <tr key={campaign.id} className="transition-colors hover:bg-neutral-50">
+                      <td className="px-6 py-4">
+                        <span className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-bold ${style.bg} ${style.text}`}>
+                          <span className={`h-2 w-2 rounded-full ${style.dot}`} />
+                          {campaign.platform}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4">
+                        <p className="font-semibold text-neutral-900">{campaign.campaignName}</p>
+                        <p className="mt-1 text-xs text-neutral-500">{formatMonthLabel(campaign.monthYear)}</p>
+                      </td>
+                      <td className="px-6 py-4 text-right font-medium text-neutral-700">{formatCurrency(campaign.spend)}</td>
+                      <td className="px-6 py-4 text-right font-medium text-neutral-900">{formatCurrency(campaign.revenue)}</td>
+                      <td className={`px-6 py-4 text-right font-bold ${roi >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                        {roi.toFixed(0)}%
+                      </td>
+                      <td className="px-6 py-4 text-center">
+                        <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-bold ${getStatusTone(campaign.status)}`}>
+                          {campaign.status === 'Running' ? <CheckCircle2 className="h-3.5 w-3.5" /> : <CircleDashed className="h-3.5 w-3.5" />}
+                          {campaign.status}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
             </tbody>
           </table>
         </div>

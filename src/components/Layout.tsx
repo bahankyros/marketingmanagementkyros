@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router';
 import { motion, AnimatePresence } from 'motion/react';
 import {
-  LayoutDashboard, Megaphone, Handshake, MonitorPlay, Calendar, Smile, BookOpen,
+  LayoutDashboard, Megaphone, Handshake, MonitorPlay, Calendar, Smile, BookOpen, Truck,
   CheckSquare, BarChart, Settings, LogOut, Ticket, Bell, TrendingUp, Menu, X
 } from 'lucide-react';
 import { useAuth } from '../lib/AuthContext';
@@ -22,6 +22,7 @@ const navItems: Array<{
   { path: '/inbox', label: 'Inbox', icon: <Bell size={20} />, allowedRoles: ['admin', 'supervisor'] },
   { path: '/mascots', label: 'Mascot', icon: <Smile size={20} />, allowedRoles: ['admin', 'supervisor', 'pic'] },
   { path: '/blog', label: 'Blog', icon: <BookOpen size={20} />, adminOnly: true },
+  { path: '/delivery', label: 'Delivery', icon: <Truck size={20} /> },
   { path: '/vouchers', label: 'Vouchers', icon: <Ticket size={20} /> },
   { path: '/tasks', label: 'Tasks', icon: <CheckSquare size={20} />, allowedRoles: ['admin', 'supervisor'] },
   { path: '/sales', label: 'Sales', icon: <TrendingUp size={20} />, adminOnly: true },
