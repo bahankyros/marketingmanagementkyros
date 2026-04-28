@@ -1,409 +1,516 @@
-import React, { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import { Truck, Plus, CheckCircle2, CircleDashed, TrendingUp, DollarSign, X } from 'lucide-react';
-import { useAuth } from '../lib/AuthContext';
-import { useCampaigns } from '../lib/useCampaigns';
-import { supabase } from '../lib/supabase';
-import { nowIso, subscribeToTable, toNullableDate, toNullableUuid, toNumber } from '../lib/supabaseData';
+import React, { useMemo, useState } from 'react';
+import { motion } from 'motion/react';
+import {
+  Activity,
+  BarChart3,
+  Calendar,
+  CheckCircle2,
+  CircleDashed,
+  DollarSign,
+  Filter,
+  PieChart,
+  TrendingUp,
+  Truck
+} from 'lucide-react';
+import {
+  CartesianGrid,
+  Legend,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis
+} from 'recharts';
 
-function normalizeDeliveryPromo(row: any) {
-  return {
-    id: row.id,
-    platform: row.platform || 'GrabFood',
-    promoType: row.promo_type || '',
-    campaignId: row.campaign_id || '',
-    startDate: row.start_date || '',
-    endDate: row.end_date || '',
-    spend: toNumber(row.spend),
-    sales: toNumber(row.sales),
-    funding: row.funding || 'Self-funded',
-    status: row.status || 'Proposed',
-    picId: row.pic_user_id || '',
-    createdAt: row.created_at || '',
-    updatedAt: row.updated_at || ''
-  };
+type Platform = 'GrabFood' | 'Foodpanda' | 'ShopeeFood';
+type PlatformFilter = 'All Platforms' | Platform;
+type PromoStatus = 'Planning' | 'Running' | 'Completed' | 'Paused';
+
+type DeliveryPromoRecord = {
+  id: string;
+  monthKey: string;
+  platform: Platform;
+  promoName: string;
+  spend: number;
+  revenue: number;
+  status: PromoStatus;
+};
+
+type PlatformSummary = {
+  platform: Platform;
+  spend: number;
+  revenue: number;
+  roi: number;
+};
+
+const PLATFORMS: Platform[] = ['GrabFood', 'Foodpanda', 'ShopeeFood'];
+const PLATFORM_FILTERS: PlatformFilter[] = ['All Platforms', ...PLATFORMS];
+
+const platformStyles: Record<Platform, { dot: string; text: string; bg: string; bar: string }> = {
+  GrabFood: {
+    dot: 'bg-emerald-500',
+    text: 'text-emerald-700',
+    bg: 'bg-emerald-50',
+    bar: 'bg-emerald-500'
+  },
+  Foodpanda: {
+    dot: 'bg-pink-500',
+    text: 'text-pink-700',
+    bg: 'bg-pink-50',
+    bar: 'bg-pink-500'
+  },
+  ShopeeFood: {
+    dot: 'bg-orange-500',
+    text: 'text-orange-700',
+    bg: 'bg-orange-50',
+    bar: 'bg-orange-500'
+  }
+};
+
+const MOCK_PROMOS: DeliveryPromoRecord[] = [
+  { id: 'nov-grab-1', monthKey: '2025-11', platform: 'GrabFood', promoName: '11.11 Combo Push', spend: 4200, revenue: 23800, status: 'Completed' },
+  { id: 'nov-foodpanda-1', monthKey: '2025-11', platform: 'Foodpanda', promoName: 'Weekend Value Meals', spend: 3600, revenue: 19600, status: 'Completed' },
+  { id: 'nov-shopee-1', monthKey: '2025-11', platform: 'ShopeeFood', promoName: 'New User Delivery Deal', spend: 2900, revenue: 14200, status: 'Completed' },
+  { id: 'dec-grab-1', monthKey: '2025-12', platform: 'GrabFood', promoName: 'Year End Feast', spend: 5300, revenue: 30100, status: 'Completed' },
+  { id: 'dec-foodpanda-1', monthKey: '2025-12', platform: 'Foodpanda', promoName: 'Holiday Lunch Boost', spend: 4100, revenue: 22100, status: 'Completed' },
+  { id: 'dec-shopee-1', monthKey: '2025-12', platform: 'ShopeeFood', promoName: 'Free Delivery Stack', spend: 3400, revenue: 18100, status: 'Completed' },
+  { id: 'jan-grab-1', monthKey: '2026-01', platform: 'GrabFood', promoName: 'New Year Meal Sets', spend: 4700, revenue: 26400, status: 'Completed' },
+  { id: 'jan-foodpanda-1', monthKey: '2026-01', platform: 'Foodpanda', promoName: 'Weekday Office Lunch', spend: 3900, revenue: 21300, status: 'Completed' },
+  { id: 'jan-shopee-1', monthKey: '2026-01', platform: 'ShopeeFood', promoName: 'Shopee Coins Bundle', spend: 3200, revenue: 15900, status: 'Completed' },
+  { id: 'feb-grab-1', monthKey: '2026-02', platform: 'GrabFood', promoName: 'Family Sharing Deals', spend: 4900, revenue: 28700, status: 'Completed' },
+  { id: 'feb-foodpanda-1', monthKey: '2026-02', platform: 'Foodpanda', promoName: 'Payday Voucher Burst', spend: 4400, revenue: 24900, status: 'Completed' },
+  { id: 'feb-shopee-1', monthKey: '2026-02', platform: 'ShopeeFood', promoName: 'Snack Hour Push', spend: 3000, revenue: 15400, status: 'Completed' },
+  { id: 'mar-grab-1', monthKey: '2026-03', platform: 'GrabFood', promoName: 'Ramadan Dinner Slots', spend: 6100, revenue: 37400, status: 'Completed' },
+  { id: 'mar-foodpanda-1', monthKey: '2026-03', platform: 'Foodpanda', promoName: 'Iftar Bundle Promo', spend: 5600, revenue: 31900, status: 'Completed' },
+  { id: 'mar-shopee-1', monthKey: '2026-03', platform: 'ShopeeFood', promoName: 'Sahur Saver', spend: 3700, revenue: 20100, status: 'Completed' },
+  { id: 'apr-grab-1', monthKey: '2026-04', platform: 'GrabFood', promoName: 'Raya Combo Sets', spend: 6800, revenue: 42100, status: 'Running' },
+  { id: 'apr-grab-2', monthKey: '2026-04', platform: 'GrabFood', promoName: 'Lunch Hour Top-Up', spend: 2400, revenue: 13200, status: 'Running' },
+  { id: 'apr-foodpanda-1', monthKey: '2026-04', platform: 'Foodpanda', promoName: 'Panda Picks Bundle', spend: 5200, revenue: 29700, status: 'Running' },
+  { id: 'apr-foodpanda-2', monthKey: '2026-04', platform: 'Foodpanda', promoName: 'Outlet Hero Voucher', spend: 1700, revenue: 8400, status: 'Planning' },
+  { id: 'apr-shopee-1', monthKey: '2026-04', platform: 'ShopeeFood', promoName: 'ShopeeFood Mega Day', spend: 4100, revenue: 22600, status: 'Running' },
+  { id: 'apr-shopee-2', monthKey: '2026-04', platform: 'ShopeeFood', promoName: 'Weekend Flash Delivery', spend: 1500, revenue: 6100, status: 'Paused' }
+];
+
+function formatMonthLabel(monthKey: string) {
+  const [year, month] = monthKey.split('-').map(Number);
+  return new Intl.DateTimeFormat('en-MY', { month: 'short', year: 'numeric' }).format(new Date(year, month - 1, 1));
+}
+
+function formatCurrency(value: number) {
+  return new Intl.NumberFormat('en-MY', {
+    style: 'currency',
+    currency: 'MYR',
+    currencyDisplay: 'narrowSymbol',
+    maximumFractionDigits: 0
+  }).format(value);
+}
+
+function calculateRoi(revenue: number, spend: number) {
+  return spend > 0 ? ((revenue - spend) / spend) * 100 : 0;
+}
+
+function getSixMonthKeys(selectedMonth: string) {
+  const [year, month] = selectedMonth.split('-').map(Number);
+  const cursor = new Date(year, month - 1, 1);
+
+  return Array.from({ length: 6 }, (_, index) => {
+    const date = new Date(cursor.getFullYear(), cursor.getMonth() - (5 - index), 1);
+    const normalizedMonth = String(date.getMonth() + 1).padStart(2, '0');
+    return `${date.getFullYear()}-${normalizedMonth}`;
+  });
+}
+
+function getStatusTone(status: PromoStatus) {
+  switch (status) {
+    case 'Running':
+      return 'bg-emerald-100 text-emerald-700';
+    case 'Completed':
+      return 'bg-neutral-100 text-neutral-700';
+    case 'Paused':
+      return 'bg-rose-100 text-rose-700';
+    default:
+      return 'bg-amber-100 text-amber-700';
+  }
+}
+
+function summarizeByPlatform(records: DeliveryPromoRecord[]): PlatformSummary[] {
+  return PLATFORMS.map((platform) => {
+    const platformRecords = records.filter((record) => record.platform === platform);
+    const spend = platformRecords.reduce((sum, record) => sum + record.spend, 0);
+    const revenue = platformRecords.reduce((sum, record) => sum + record.revenue, 0);
+
+    return {
+      platform,
+      spend,
+      revenue,
+      roi: calculateRoi(revenue, spend)
+    };
+  });
+}
+
+function PlatformBreakdown({
+  summaries,
+  metric
+}: {
+  summaries: PlatformSummary[];
+  metric: 'revenue' | 'spend' | 'roi';
+}) {
+  const maxValue = Math.max(...summaries.map((summary) => Math.max(summary[metric], 0)), 1);
+
+  return (
+    <div className="mt-5 space-y-3">
+      {summaries.map((summary) => {
+        const style = platformStyles[summary.platform];
+        const value = summary[metric];
+        const width = metric === 'roi'
+          ? Math.min(Math.max(value, 0), 700) / 7
+          : (value / maxValue) * 100;
+        const formattedValue = metric === 'roi' ? `${value.toFixed(0)}%` : formatCurrency(value);
+
+        return (
+          <div key={summary.platform}>
+            <div className="mb-1 flex items-center justify-between gap-3 text-xs font-semibold text-neutral-500">
+              <span className="flex items-center gap-2">
+                <span className={`h-2.5 w-2.5 rounded-full ${style.dot}`} />
+                {summary.platform}
+              </span>
+              <span>{formattedValue}</span>
+            </div>
+            <div className="h-2 overflow-hidden rounded-full bg-neutral-100">
+              <div className={`h-full rounded-full ${style.bar}`} style={{ width: `${Math.min(width, 100)}%` }} />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 export function DeliveryPromos() {
-  const { user, userData } = useAuth();
-  const { campaigns } = useCampaigns();
-  const role = userData?.role;
-  const canManagePromos = role === 'admin' || role === 'supervisor';
-  
-  const [promos, setPromos] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
-  
-  const [editingPromo, setEditingPromo] = useState<any>(null);
-  const [isCreating, setIsCreating] = useState(false);
+  const monthOptions = useMemo(
+    () => Array.from(new Set(MOCK_PROMOS.map((promo) => promo.monthKey))).sort(),
+    []
+  );
+  const [selectedMonth, setSelectedMonth] = useState(monthOptions[monthOptions.length - 1]);
+  const [activePlatform, setActivePlatform] = useState<PlatformFilter>('All Platforms');
 
-  const [formData, setFormData] = useState({
-    platform: 'GrabFood',
-    promoType: '',
-    campaignId: '',
-    startDate: '',
-    endDate: '',
-    spend: '',
-    sales: '',
-    funding: 'Self-funded',
-    status: 'Proposed'
-  });
+  const selectedMonthPromos = useMemo(
+    () => MOCK_PROMOS.filter((promo) => promo.monthKey === selectedMonth),
+    [selectedMonth]
+  );
 
-  useEffect(() => {
-    if (!user) return;
-    const fetchPromos = async () => {
-      const { data, error } = await supabase
-        .from('delivery_promos')
-        .select('*')
-        .order('created_at', { ascending: false });
+  const visiblePromos = useMemo(
+    () => selectedMonthPromos.filter((promo) => activePlatform === 'All Platforms' || promo.platform === activePlatform),
+    [activePlatform, selectedMonthPromos]
+  );
 
-      if (error) {
-        console.error("Error fetching promos:", error);
-        setLoading(false);
-        return;
-      }
+  const platformSummaries = useMemo(
+    () => summarizeByPlatform(selectedMonthPromos),
+    [selectedMonthPromos]
+  );
 
-      setPromos((data || []).map(normalizeDeliveryPromo));
-      setLoading(false);
+  const totals = useMemo(() => {
+    const spend = selectedMonthPromos.reduce((sum, promo) => sum + promo.spend, 0);
+    const revenue = selectedMonthPromos.reduce((sum, promo) => sum + promo.revenue, 0);
+
+    return {
+      spend,
+      revenue,
+      roi: calculateRoi(revenue, spend)
     };
+  }, [selectedMonthPromos]);
 
-    void fetchPromos();
-    const unsubscribe = subscribeToTable('delivery-promos-page', 'delivery_promos', () => {
-      void fetchPromos();
+  const chartData = useMemo(() => {
+    return getSixMonthKeys(selectedMonth).map((monthKey) => {
+      const monthRecords = MOCK_PROMOS.filter((promo) => {
+        return promo.monthKey === monthKey && (activePlatform === 'All Platforms' || promo.platform === activePlatform);
+      });
+      const spend = monthRecords.reduce((sum, promo) => sum + promo.spend, 0);
+      const revenue = monthRecords.reduce((sum, promo) => sum + promo.revenue, 0);
+
+      return {
+        month: formatMonthLabel(monthKey),
+        spend,
+        revenue
+      };
     });
+  }, [activePlatform, selectedMonth]);
 
-    return () => unsubscribe();
-  }, [user]);
+  const filteredTotals = useMemo(() => {
+    const spend = visiblePromos.reduce((sum, promo) => sum + promo.spend, 0);
+    const revenue = visiblePromos.reduce((sum, promo) => sum + promo.revenue, 0);
 
-  const handleCreateSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!user || !userData || !canManagePromos) return;
-    try {
-      const timestamp = nowIso();
-      const { error } = await supabase
-        .from('delivery_promos')
-        .insert({
-          platform: formData.platform,
-          promo_type: formData.promoType.trim(),
-          campaign_id: toNullableUuid(formData.campaignId),
-          start_date: toNullableDate(formData.startDate),
-          end_date: toNullableDate(formData.endDate),
-          spend: Number(formData.spend) || 0,
-          sales: Number(formData.sales) || 0,
-          funding: formData.funding,
-          status: formData.status,
-          pic_user_id: userData.id,
-          created_at: timestamp,
-          updated_at: timestamp
-        });
-
-      if (error) throw error;
-
-      setIsCreating(false);
-      setFormData({ platform: 'GrabFood', promoType: '', campaignId: '', startDate: '', endDate: '', spend: '', sales: '', funding: 'Self-funded', status: 'Proposed' });
-    } catch (error) {
-      console.error("Error creating promo:", error);
-      alert("Failed to create delivery promo track.");
-    }
-  };
-
-  const handleUpdateSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!editingPromo || !canManagePromos) return;
-    try {
-      const { error } = await supabase
-        .from('delivery_promos')
-        .update({
-          platform: editingPromo.platform || 'GrabFood',
-          promo_type: editingPromo.promoType || '',
-          campaign_id: toNullableUuid(editingPromo.campaignId),
-          start_date: toNullableDate(editingPromo.startDate),
-          end_date: toNullableDate(editingPromo.endDate),
-          spend: Number(editingPromo.spend) || 0,
-          sales: Number(editingPromo.sales) || 0,
-          funding: editingPromo.funding || 'Self-funded',
-          status: editingPromo.status || 'Proposed',
-          updated_at: nowIso()
-        })
-        .eq('id', editingPromo.id);
-
-      if (error) throw error;
-
-      setEditingPromo(null);
-    } catch (error) {
-      console.error("Error updating promo:", error);
-      alert("Failed to update delivery promo.");
-    }
-  };
-
-  const totalSales = promos.reduce((sum, p) => sum + (Number(p.sales) || 0), 0);
-  const totalSpend = promos.reduce((sum, p) => sum + (Number(p.spend) || 0), 0);
-  const avgRoi = totalSpend > 0 ? (((totalSales - totalSpend) / totalSpend) * 100).toFixed(0) : 0;
+    return {
+      spend,
+      revenue,
+      roi: calculateRoi(revenue, spend)
+    };
+  }, [visiblePromos]);
 
   return (
-    <div className="space-y-6 pb-12">
-      <header className="flex justify-between items-center">
+    <div className="space-y-8 pb-12">
+      <header className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight text-neutral-900">Delivery Platform Marketing</h1>
-          <p className="text-neutral-500 mt-1">Track promos and ROAS across GrabFood, Foodpanda & ShopeeFood</p>
+          <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-orange-100 bg-orange-50 px-3 py-1 text-xs font-bold uppercase tracking-[0.2px] text-orange-700">
+            <Truck className="h-3.5 w-3.5" />
+            Delivery Platform Marketing
+          </div>
+          <h1 className="text-3xl font-bold tracking-tight text-neutral-900">Delivery Marketing Dashboard</h1>
+          <p className="mt-1 text-neutral-500">
+            Mock performance view for GrabFood, Foodpanda, and ShopeeFood before Supabase wiring.
+          </p>
         </div>
-        {canManagePromos && (
-          <button onClick={() => setIsCreating(true)} className="flex items-center gap-2 bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-lg font-medium transition-colors shadow-sm">
-            <Plus size={20} /> Propose Promo
-          </button>
-        )}
+
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+          <label htmlFor="delivery-month" className="flex items-center gap-2 text-sm font-semibold text-neutral-600">
+            <Calendar className="h-4 w-4 text-orange-500" />
+            Month
+          </label>
+          <select
+            id="delivery-month"
+            value={selectedMonth}
+            onChange={(event) => setSelectedMonth(event.target.value)}
+            className="min-w-48 rounded-xl border border-neutral-200 bg-white px-4 py-2.5 text-sm font-semibold text-neutral-900 outline-none transition-colors focus:border-orange-400 focus:ring-2 focus:ring-orange-100"
+          >
+            {monthOptions.map((monthKey) => (
+              <option key={monthKey} value={monthKey}>
+                {formatMonthLabel(monthKey)}
+              </option>
+            ))}
+          </select>
+        </div>
       </header>
 
-      {/* Overview Cards */}
-      <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-         <div className="bg-white p-6 rounded-2xl shadow-sm border border-neutral-100 flex items-center justify-between">
+      <section className="flex flex-wrap gap-2">
+        {PLATFORM_FILTERS.map((platform) => (
+          <button
+            key={platform}
+            type="button"
+            onClick={() => setActivePlatform(platform)}
+            className={`inline-flex items-center gap-2 rounded-xl border px-4 py-2 text-sm font-semibold transition-colors ${
+              activePlatform === platform
+                ? 'border-neutral-900 bg-neutral-900 text-white'
+                : 'border-neutral-200 bg-white text-neutral-600 hover:border-neutral-300 hover:text-neutral-900'
+            }`}
+          >
+            {platform === 'All Platforms' ? (
+              <Filter className="h-4 w-4" />
+            ) : (
+              <span className={`h-2.5 w-2.5 rounded-full ${platformStyles[platform].dot}`} />
+            )}
+            {platform}
+          </button>
+        ))}
+      </section>
+
+      <motion.section
+        className="grid grid-cols-1 gap-5 xl:grid-cols-3"
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.25 }}
+      >
+        <div className="rounded-2xl border border-neutral-100 bg-white p-6 shadow-sm">
+          <div className="flex items-start justify-between gap-4">
             <div>
-               <p className="text-sm font-semibold text-neutral-500 uppercase tracking-wider mb-1">Total Sales Generated</p>
-               <p className="text-2xl font-bold text-neutral-900">RM {totalSales.toLocaleString()}</p>
+              <p className="text-sm font-semibold uppercase tracking-[0.2px] text-neutral-500">Total Revenue</p>
+              <p className="mt-2 text-3xl font-bold text-neutral-900">{formatCurrency(totals.revenue)}</p>
             </div>
-            <div className="w-12 h-12 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center">
-              <TrendingUp className="w-6 h-6" />
+            <div className="rounded-xl bg-emerald-50 p-3 text-emerald-600">
+              <TrendingUp className="h-6 w-6" />
             </div>
-         </div>
-         <div className="bg-white p-6 rounded-2xl shadow-sm border border-neutral-100 flex items-center justify-between">
-            <div>
-               <p className="text-sm font-semibold text-neutral-500 uppercase tracking-wider mb-1">Total Spend</p>
-               <p className="text-2xl font-bold text-neutral-900">RM {totalSpend.toLocaleString()}</p>
-            </div>
-            <div className="w-12 h-12 rounded-full bg-orange-50 text-orange-600 flex items-center justify-center">
-              <DollarSign className="w-6 h-6" />
-            </div>
-         </div>
-         <div className="bg-gradient-to-br from-orange-50 to-amber-50 p-6 rounded-2xl border border-orange-200 flex flex-col justify-center">
-            <p className="text-sm font-semibold text-orange-600 uppercase tracking-wider mb-1">Average Promo ROI</p>
-            <p className="text-3xl font-extrabold text-orange-600">{avgRoi}%</p>
-         </div>
-      </motion.div>
-
-      {/* List */}
-      <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {loading ? (
-             <p className="text-neutral-500">Loading tracking data...</p>
-          ) : promos.length === 0 ? (
-             <div className="col-span-full border border-dashed border-neutral-200 rounded-2xl p-12 text-center bg-white">
-               <Truck className="mx-auto w-12 h-12 text-orange-200 mb-4" />
-               <p className="text-lg font-medium text-neutral-900">No promos tracked</p>
-               {canManagePromos ? (
-                 <button onClick={() => setIsCreating(true)} className="text-orange-600 mt-2 font-medium hover:text-orange-700">Log the first campaign</button>
-               ) : (
-                 <p className="text-sm text-neutral-500 mt-2">Admins and supervisors can manage delivery promos.</p>
-               )}
-             </div>
-          ) : (
-             promos.map(promo => {
-               const pSpend = Number(promo.spend) || 0;
-               const pSales = Number(promo.sales) || 0;
-               const pRoi = pSpend > 0 ? (((pSales - pSpend) / pSpend) * 100).toFixed(0) : 0;
-               
-               return (
-               <div
-                 key={promo.id}
-                 onClick={() => {
-                   if (canManagePromos) {
-                     setEditingPromo(promo);
-                   }
-                 }}
-                 className={`bg-white p-5 rounded-2xl shadow-sm border border-neutral-100 relative group flex flex-col justify-between transition-shadow ${
-                   canManagePromos ? 'cursor-pointer hover:shadow-md' : ''
-                 }`}
-               >
-                  <div>
-                     <div className="flex justify-between items-start mb-4">
-                        <div>
-                          <span className="text-xs font-bold px-2 py-1 bg-neutral-100 text-neutral-600 rounded mr-2 uppercase tracking-wider">{promo.platform}</span>
-                          <span className="text-[10px] font-bold px-2 py-1 border border-neutral-200 text-neutral-500 rounded">{promo.funding}</span>
-                        </div>
-                        <span className={`text-xs font-semibold px-2 py-1 rounded-full flex items-center gap-1 ${
-                          promo.status === 'Running' ? 'bg-emerald-100 text-emerald-700' :
-                          promo.status === 'Ended' || promo.status === 'Evaluated' ? 'bg-neutral-100 text-neutral-600' :
-                          'bg-amber-100 text-amber-700'
-                        }`}>
-                          {promo.status === 'Running' ? <CheckCircle2 className="w-3 h-3" /> : <CircleDashed className="w-3 h-3" />}
-                          {promo.status}
-                        </span>
-                     </div>
-
-                     <h3 className="text-lg font-bold text-neutral-900 mb-1">{promo.promoType}</h3>
-                     {promo.campaignId && <p className="text-xs font-medium text-orange-600 mb-2">Campaign: {promo.campaignId}</p>}
-                     <p className="text-xs text-neutral-500 mb-4">Dates: {promo.startDate || 'TBD'} to {promo.endDate || 'TBD'}</p>
-                  </div>
-
-                  <div className="bg-neutral-50 p-3 rounded-xl flex justify-between items-center text-sm border border-neutral-100">
-                    <div>
-                      <p className="text-neutral-500 text-xs">Spend vs Sales</p>
-                      <p className="font-semibold text-neutral-900">RM {pSpend.toLocaleString()} / <span className="text-emerald-600">RM {pSales.toLocaleString()}</span></p>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-neutral-500 text-xs">ROI</p>
-                      <p className={`font-bold ${Number(pRoi) >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{pRoi}%</p>
-                    </div>
-                  </div>
-               </div>
-             )})
-          )}
+          </div>
+          <PlatformBreakdown summaries={platformSummaries} metric="revenue" />
         </div>
-      </motion.div>
 
-      {/* Slide-out Create Panel */}
-      <AnimatePresence>
-        {isCreating && canManagePromos && (
-          <>
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => setIsCreating(false)}
-              className="fixed inset-0 bg-neutral-900/30 backdrop-blur-sm z-40"
-            />
-            <motion.div
-              initial={{ x: '100%' }}
-              animate={{ x: 0 }}
-              exit={{ x: '100%' }}
-              transition={{ type: 'spring', bounce: 0, duration: 0.3 }}
-              className="fixed right-0 top-0 bottom-0 w-full max-w-md bg-white shadow-2xl z-50 border-l border-neutral-200 flex flex-col"
-            >
-              <div className="px-6 py-4 border-b border-neutral-100 flex items-center justify-between bg-neutral-50">
-                <div>
-                  <h3 className="font-bold text-neutral-900 text-lg">Propose Delivery Action</h3>
-                  <p className="text-sm text-neutral-500 font-mono mt-0.5">New Promo Setup</p>
-                </div>
-                <button onClick={() => setIsCreating(false)} className="p-2 hover:bg-neutral-200 rounded-lg text-neutral-500 transition-colors">
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-              
-              <div className="flex-1 overflow-y-auto p-6">
-                <form id="promo-create-form" onSubmit={handleCreateSubmit} className="space-y-5">
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1">
-                      <label className="text-sm font-medium text-neutral-700">Platform</label>
-                      <select value={formData.platform} onChange={e=>setFormData({...formData, platform: e.target.value})} className="w-full p-2 bg-neutral-50 border border-neutral-200 rounded-lg outline-none focus:ring-2 focus:ring-orange-500">
-                        {['GrabFood', 'Foodpanda', 'ShopeeFood', 'Other'].map(opt => <option key={opt}>{opt}</option>)}
-                      </select>
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-sm font-medium text-neutral-700">Funding</label>
-                      <select value={formData.funding} onChange={e=>setFormData({...formData, funding: e.target.value})} className="w-full p-2 bg-neutral-50 border border-neutral-200 rounded-lg outline-none focus:ring-2 focus:ring-orange-500">
-                        {['Platform-funded', 'Self-funded', 'Co-funded'].map(opt => <option key={opt}>{opt}</option>)}
-                      </select>
-                    </div>
-                  </div>
-                  
-                  <div className="space-y-1">
-                    <label className="text-sm font-medium text-neutral-700">Promo Type / Name *</label>
-                    <input required type="text" placeholder="e.g. Free Delivery, 20% Off" value={formData.promoType} onChange={e=>setFormData({...formData, promoType: e.target.value})} className="w-full p-2 bg-neutral-50 border border-neutral-200 rounded-lg outline-none focus:ring-2 focus:ring-orange-500" />
-                  </div>
+        <div className="rounded-2xl border border-neutral-100 bg-white p-6 shadow-sm">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="text-sm font-semibold uppercase tracking-[0.2px] text-neutral-500">Total Spend</p>
+              <p className="mt-2 text-3xl font-bold text-neutral-900">{formatCurrency(totals.spend)}</p>
+            </div>
+            <div className="rounded-xl bg-orange-50 p-3 text-orange-600">
+              <DollarSign className="h-6 w-6" />
+            </div>
+          </div>
+          <PlatformBreakdown summaries={platformSummaries} metric="spend" />
+        </div>
 
-                  <div className="space-y-1">
-                    <label className="text-sm font-medium text-neutral-700">Campaign Tie-in</label>
-                    <select value={formData.campaignId} onChange={e=>setFormData({...formData, campaignId: e.target.value})} className="w-full p-2 bg-neutral-50 border border-neutral-200 rounded-lg outline-none focus:ring-2 focus:ring-orange-500">
-                      <option value="">None / Standalone</option>
-                      {campaigns.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                    </select>
-                  </div>
-                  
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1">
-                      <label className="text-sm font-medium text-neutral-700">Start Date</label>
-                      <input type="date" value={formData.startDate} onChange={e=>setFormData({...formData, startDate: e.target.value})} className="w-full p-2 bg-neutral-50 border border-neutral-200 rounded-lg outline-none focus:ring-2 focus:ring-orange-500" />
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-sm font-medium text-neutral-700">End Date</label>
-                      <input type="date" value={formData.endDate} onChange={e=>setFormData({...formData, endDate: e.target.value})} className="w-full p-2 bg-neutral-50 border border-neutral-200 rounded-lg outline-none focus:ring-2 focus:ring-orange-500" />
-                    </div>
-                  </div>
-                </form>
-              </div>
-              
-              <div className="p-4 border-t border-neutral-100 bg-neutral-50 flex justify-end gap-3">
-                <button onClick={() => setIsCreating(false)} className="px-5 py-2 text-neutral-600 font-medium hover:bg-neutral-200 rounded-lg transition-colors">Cancel</button>
-                <button type="submit" form="promo-create-form" className="px-5 py-2 bg-orange-500 hover:bg-orange-600 text-white font-medium rounded-lg shadow-sm transition-colors">Submit</button>
-              </div>
-            </motion.div>
-          </>
-        )}
-      </AnimatePresence>
+        <div className="rounded-2xl border border-neutral-100 bg-white p-6 shadow-sm">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="text-sm font-semibold uppercase tracking-[0.2px] text-neutral-500">Average ROI</p>
+              <p className={`mt-2 text-3xl font-bold ${totals.roi >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                {totals.roi.toFixed(0)}%
+              </p>
+            </div>
+            <div className="rounded-xl bg-blue-50 p-3 text-blue-600">
+              <PieChart className="h-6 w-6" />
+            </div>
+          </div>
+          <PlatformBreakdown summaries={platformSummaries} metric="roi" />
+        </div>
+      </motion.section>
 
-      {/* Slide-out Edit Panel */}
-      <AnimatePresence>
-        {editingPromo && canManagePromos && (
-          <>
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => setEditingPromo(null)}
-              className="fixed inset-0 bg-neutral-900/30 backdrop-blur-sm z-40"
-            />
-            <motion.div
-              initial={{ x: '100%' }}
-              animate={{ x: 0 }}
-              exit={{ x: '100%' }}
-              transition={{ type: 'spring', bounce: 0, duration: 0.3 }}
-              className="fixed right-0 top-0 bottom-0 w-full max-w-md bg-white shadow-2xl z-50 border-l border-neutral-200 flex flex-col"
-            >
-              <div className="px-6 py-4 border-b border-neutral-100 flex items-center justify-between bg-neutral-50">
-                <div>
-                  <h3 className="font-bold text-neutral-900 text-lg">Update Promo Config</h3>
-                  <p className="text-sm text-neutral-500 font-mono mt-0.5">{editingPromo.promoType}</p>
-                </div>
-                <button onClick={() => setEditingPromo(null)} className="p-2 hover:bg-neutral-200 rounded-lg text-neutral-500 transition-colors">
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-              
-              <div className="flex-1 overflow-y-auto p-6">
-                <form id="promo-update-form" onSubmit={handleUpdateSubmit} className="space-y-6">
-                  
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1">
-                      <label className="text-sm font-medium text-neutral-700">Status</label>
-                      <select value={editingPromo.status} onChange={e=>setEditingPromo({...editingPromo, status: e.target.value})} className="w-full p-2 bg-neutral-50 border border-neutral-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500">
-                        {['Proposed', 'Submitted', 'Running', 'Ended', 'Evaluated'].map(opt => <option key={opt}>{opt}</option>)}
-                      </select>
-                    </div>
-                  </div>
-                  
-                  <div className="space-y-4 pt-4 border-t border-neutral-100">
-                    <h4 className="font-semibold text-neutral-900 border-b border-neutral-100 pb-2">Financials & Returns (ROAS)</h4>
-                    
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="space-y-1">
-                        <label className="text-sm font-medium text-neutral-700">Committed Spend (RM)</label>
-                        <input type="number" value={editingPromo.spend} onChange={e=>setEditingPromo({...editingPromo, spend: e.target.value})} className="w-full p-2 bg-neutral-50 border border-neutral-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500" />
-                      </div>
-                      <div className="space-y-1">
-                        <label className="text-sm font-medium text-neutral-700">Sales Generated (RM)</label>
-                        <input type="number" value={editingPromo.sales} onChange={e=>setEditingPromo({...editingPromo, sales: e.target.value})} className="w-full p-2 bg-neutral-50 border border-neutral-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500" />
-                      </div>
-                    </div>
-                    
-                    <div className="bg-neutral-50 p-4 rounded-xl border border-neutral-200/60 mt-2">
-                       <p className="text-xs text-neutral-500 uppercase font-semibold mb-1">Calculated Return on Ad Spend (ROAS)</p>
-                       <p className="text-2xl font-bold text-neutral-900">
-                          {Number(editingPromo.spend) > 0 
-                             ? (((Number(editingPromo.sales) - Number(editingPromo.spend)) / Number(editingPromo.spend)) * 100).toFixed(0) + '%' 
-                             : 'No spend data'}
-                       </p>
-                    </div>
-                  </div>
-                </form>
-              </div>
-              
-              <div className="p-4 border-t border-neutral-100 bg-neutral-50 flex justify-end gap-3">
-                <button onClick={() => setEditingPromo(null)} className="px-5 py-2 text-neutral-600 font-medium hover:bg-neutral-200 rounded-lg transition-colors">Cancel</button>
-                <button type="submit" form="promo-update-form" className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-medium rounded-lg shadow-sm transition-colors">Save Updates</button>
-              </div>
-            </motion.div>
-          </>
-        )}
-      </AnimatePresence>
+      <motion.section
+        className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1.6fr)_minmax(280px,0.4fr)]"
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.25, delay: 0.05 }}
+      >
+        <div className="rounded-2xl border border-neutral-100 bg-white p-6 shadow-sm">
+          <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <h2 className="flex items-center gap-2 text-lg font-semibold text-neutral-900">
+                <BarChart3 className="h-5 w-5 text-orange-500" />
+                Sales vs Spend
+              </h2>
+              <p className="mt-1 text-sm text-neutral-500">Six-month trend ending {formatMonthLabel(selectedMonth)}.</p>
+            </div>
+            <div className="rounded-xl border border-neutral-100 bg-neutral-50 px-3 py-2 text-sm font-semibold text-neutral-600">
+              {activePlatform}
+            </div>
+          </div>
 
+          <div className="h-[340px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={chartData} margin={{ top: 8, right: 18, bottom: 0, left: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e5e5e5" />
+                <XAxis dataKey="month" tick={{ fill: '#737373', fontSize: 12 }} axisLine={false} tickLine={false} />
+                <YAxis
+                  tick={{ fill: '#737373', fontSize: 12 }}
+                  axisLine={false}
+                  tickLine={false}
+                  tickFormatter={(value) => `RM${Number(value) / 1000}k`}
+                />
+                <Tooltip
+                  formatter={(value: number, name: string) => [formatCurrency(value), name === 'revenue' ? 'Revenue' : 'Spend']}
+                  labelStyle={{ color: '#171717', fontWeight: 700 }}
+                  contentStyle={{
+                    borderRadius: 12,
+                    border: '1px solid #e5e5e5',
+                    boxShadow: '0 10px 30px rgb(15 23 42 / 0.08)'
+                  }}
+                />
+                <Legend />
+                <Line
+                  type="monotone"
+                  dataKey="revenue"
+                  name="Revenue"
+                  stroke="#10b981"
+                  strokeWidth={3}
+                  dot={{ r: 4 }}
+                  activeDot={{ r: 6 }}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="spend"
+                  name="Spend"
+                  stroke="#f97316"
+                  strokeWidth={3}
+                  dot={{ r: 4 }}
+                  activeDot={{ r: 6 }}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-neutral-100 bg-neutral-900 p-6 text-white shadow-sm">
+          <div className="flex items-center gap-3">
+            <div className="rounded-xl bg-white/10 p-3 text-orange-300">
+              <Activity className="h-5 w-5" />
+            </div>
+            <div>
+              <p className="text-sm font-semibold uppercase tracking-[0.2px] text-neutral-300">Selected View</p>
+              <h3 className="text-xl font-bold">{activePlatform}</h3>
+            </div>
+          </div>
+
+          <div className="mt-8 space-y-5">
+            <div>
+              <p className="text-sm text-neutral-400">Revenue</p>
+              <p className="mt-1 text-2xl font-bold">{formatCurrency(filteredTotals.revenue)}</p>
+            </div>
+            <div>
+              <p className="text-sm text-neutral-400">Spend</p>
+              <p className="mt-1 text-2xl font-bold">{formatCurrency(filteredTotals.spend)}</p>
+            </div>
+            <div>
+              <p className="text-sm text-neutral-400">ROI</p>
+              <p className={`mt-1 text-2xl font-bold ${filteredTotals.roi >= 0 ? 'text-emerald-300' : 'text-rose-300'}`}>
+                {filteredTotals.roi.toFixed(0)}%
+              </p>
+            </div>
+          </div>
+        </div>
+      </motion.section>
+
+      <motion.section
+        className="rounded-2xl border border-neutral-100 bg-white shadow-sm"
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.25, delay: 0.1 }}
+      >
+        <div className="flex flex-col gap-2 border-b border-neutral-100 px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-lg font-semibold text-neutral-900">Active Promo Table</h2>
+            <p className="mt-1 text-sm text-neutral-500">
+              {formatMonthLabel(selectedMonth)} campaign log filtered by {activePlatform.toLowerCase()}.
+            </p>
+          </div>
+          <span className="rounded-full bg-neutral-100 px-3 py-1 text-xs font-bold text-neutral-600">
+            {visiblePromos.length} campaigns
+          </span>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[760px] text-left">
+            <thead>
+              <tr className="border-b border-neutral-100 bg-neutral-50 text-sm text-neutral-500">
+                <th className="px-6 py-4 font-semibold">Platform</th>
+                <th className="px-6 py-4 font-semibold">Promo Name</th>
+                <th className="px-6 py-4 text-right font-semibold">Spend (RM)</th>
+                <th className="px-6 py-4 text-right font-semibold">Revenue (RM)</th>
+                <th className="px-6 py-4 text-right font-semibold">ROI (%)</th>
+                <th className="px-6 py-4 text-center font-semibold">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-neutral-100">
+              {visiblePromos.map((promo) => {
+                const roi = calculateRoi(promo.revenue, promo.spend);
+                const style = platformStyles[promo.platform];
+
+                return (
+                  <tr key={promo.id} className="transition-colors hover:bg-neutral-50">
+                    <td className="px-6 py-4">
+                      <span className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-bold ${style.bg} ${style.text}`}>
+                        <span className={`h-2 w-2 rounded-full ${style.dot}`} />
+                        {promo.platform}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4">
+                      <p className="font-semibold text-neutral-900">{promo.promoName}</p>
+                      <p className="mt-1 text-xs text-neutral-500">{formatMonthLabel(promo.monthKey)}</p>
+                    </td>
+                    <td className="px-6 py-4 text-right font-medium text-neutral-700">{formatCurrency(promo.spend)}</td>
+                    <td className="px-6 py-4 text-right font-medium text-neutral-900">{formatCurrency(promo.revenue)}</td>
+                    <td className={`px-6 py-4 text-right font-bold ${roi >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                      {roi.toFixed(0)}%
+                    </td>
+                    <td className="px-6 py-4 text-center">
+                      <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-bold ${getStatusTone(promo.status)}`}>
+                        {promo.status === 'Running' ? <CheckCircle2 className="h-3.5 w-3.5" /> : <CircleDashed className="h-3.5 w-3.5" />}
+                        {promo.status}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </motion.section>
     </div>
   );
 }
