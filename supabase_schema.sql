@@ -19,7 +19,7 @@ create table public.users (
   auth_user_id uuid unique references auth.users(id) on delete set null,
   email text not null unique,
   display_name text not null default '',
-  role text not null check (role in ('admin', 'supervisor', 'finance')),
+  role text not null check (role in ('admin', 'supervisor', 'finance', 'pic')),
   outlet_id uuid references public.outlets(id) on delete set null,
   outlet_name text not null default '',
   status text not null default 'invited' check (status in ('active', 'invited', 'suspended')),

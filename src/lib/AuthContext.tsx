@@ -146,46 +146,12 @@ async function fetchUserProfile(currentUser: SupabaseUser): Promise<UserProfileR
     return authProfile as UserProfileRow;
   }
 
-  const emailKey = normalizeEmailKey(currentUser.email);
-  if (!emailKey) {
-    return null;
+  const { data: claimedProfile, error: claimError } = await supabase.rpc('claim_user_profile');
+  if (claimError) {
+    throw claimError;
   }
 
-  const { data: emailProfile, error: emailProfileError } = await supabase
-    .from('users')
-    .select(profileColumns)
-    .eq('email', emailKey)
-    .maybeSingle();
-
-  if (emailProfileError) {
-    throw emailProfileError;
-  }
-
-  if (!emailProfile) {
-    return null;
-  }
-
-  const provisionalProfile = emailProfile as UserProfileRow;
-  if (!provisionalProfile.auth_user_id) {
-    const { data: claimedProfile, error: claimError } = await supabase
-      .from('users')
-      .update({
-        auth_user_id: currentUser.id,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', provisionalProfile.id)
-      .select(profileColumns)
-      .single();
-
-    if (claimError) {
-      console.error('Error claiming Supabase user profile:', claimError);
-      return provisionalProfile;
-    }
-
-    return claimedProfile as UserProfileRow;
-  }
-
-  return provisionalProfile;
+  return claimedProfile ? (claimedProfile as UserProfileRow) : null;
 }
 
 function toAuthError(error: any) {

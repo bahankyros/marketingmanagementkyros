@@ -34,7 +34,7 @@ type TemplateFeedback = {
   message: string;
 };
 
-type ManagedUserRole = 'admin' | 'supervisor' | 'finance';
+type ManagedUserRole = 'admin' | 'supervisor' | 'finance' | 'pic';
 type ManagedUserStatus = 'active' | 'invited' | 'suspended';
 
 type ManagedUserRecord = {
@@ -88,7 +88,11 @@ const budgetCurrencyFormatter = new Intl.NumberFormat('en-MY', {
 });
 
 function isManagedUserRole(value: unknown): value is ManagedUserRole {
-  return value === 'admin' || value === 'supervisor' || value === 'finance';
+  return value === 'admin' || value === 'supervisor' || value === 'finance' || value === 'pic';
+}
+
+function isOutletScopedManagedRole(role: ManagedUserRole) {
+  return role === 'supervisor' || role === 'pic';
 }
 
 function isManagedUserStatus(value: unknown): value is ManagedUserStatus {
@@ -601,11 +605,11 @@ export function Settings() {
 
     const email = userForm.email.trim().toLowerCase();
     const displayName = userForm.display_name.trim();
-    const selectedOutlet = userForm.role === 'supervisor'
+    const selectedOutlet = isOutletScopedManagedRole(userForm.role)
       ? outlets.find((outlet) => outlet.id === userForm.outlet_id) || null
       : null;
-    const outletId = userForm.role === 'supervisor' && selectedOutlet ? selectedOutlet.id : '';
-    const outletName = userForm.role === 'supervisor' && selectedOutlet && typeof selectedOutlet.name === 'string'
+    const outletId = isOutletScopedManagedRole(userForm.role) && selectedOutlet ? selectedOutlet.id : '';
+    const outletName = isOutletScopedManagedRole(userForm.role) && selectedOutlet && typeof selectedOutlet.name === 'string'
       ? selectedOutlet.name.trim()
       : '';
     const existingManagedUser = editingUserId
@@ -622,8 +626,8 @@ export function Settings() {
       return;
     }
 
-    if (userForm.role === 'supervisor' && (!outletId || !outletName)) {
-      setUserFeedback({ tone: 'error', message: 'Supervisors need an outlet from master data.' });
+    if (isOutletScopedManagedRole(userForm.role) && (!outletId || !outletName)) {
+      setUserFeedback({ tone: 'error', message: 'Supervisor/PIC users need an outlet from master data.' });
       return;
     }
 
@@ -916,11 +920,12 @@ export function Settings() {
     );
   }
 
-  const selectedManagedOutlet = userForm?.role === 'supervisor'
+  const selectedManagedOutlet = userForm && isOutletScopedManagedRole(userForm.role)
     ? outlets.find((outlet) => outlet.id === userForm.outlet_id) || null
     : null;
   const hasLegacyManagedOutlet = Boolean(
-    userForm?.role === 'supervisor' &&
+    userForm &&
+    isOutletScopedManagedRole(userForm.role) &&
     userForm.outlet_id &&
     !selectedManagedOutlet
   );
@@ -1203,11 +1208,12 @@ export function Settings() {
                         value={userForm.role}
                         onChange={(e) => {
                           const nextRole = e.target.value as ManagedUserRole;
+                          const keepsOutlet = isOutletScopedManagedRole(nextRole);
                           setUserForm({
                             ...userForm,
                             role: nextRole,
-                            outlet_id: nextRole === 'supervisor' ? userForm.outlet_id : '',
-                            outlet_name: nextRole === 'supervisor' ? userForm.outlet_name : ''
+                            outlet_id: keepsOutlet ? userForm.outlet_id : '',
+                            outlet_name: keepsOutlet ? userForm.outlet_name : ''
                           });
                         }}
                         disabled={savingUser}
@@ -1216,6 +1222,7 @@ export function Settings() {
                         <option value="admin">Admin</option>
                         <option value="supervisor">Supervisor</option>
                         <option value="finance">Finance</option>
+                        <option value="pic">PIC</option>
                       </select>
                     </div>
                     <div className="space-y-1">
@@ -1249,7 +1256,7 @@ export function Settings() {
                               : ''
                           });
                         }}
-                        disabled={savingUser || userForm.role !== 'supervisor'}
+                        disabled={savingUser || !isOutletScopedManagedRole(userForm.role)}
                         className="w-full bg-white border border-neutral-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-violet-500 disabled:bg-neutral-100"
                       >
                         <option value="">Select outlet</option>

@@ -63,6 +63,48 @@ as $$
   )
 $$;
 
+create or replace function public.claim_user_profile()
+returns public.users
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  claimed_profile public.users;
+  auth_email text;
+begin
+  if (select auth.uid()) is null then
+    return null;
+  end if;
+
+  auth_email := lower(coalesce((select auth.jwt() ->> 'email'), ''));
+
+  if auth_email = '' then
+    return null;
+  end if;
+
+  select *
+  into claimed_profile
+  from public.users u
+  where u.auth_user_id = (select auth.uid())
+  limit 1;
+
+  if claimed_profile.id is not null then
+    return claimed_profile;
+  end if;
+
+  update public.users u
+  set
+    auth_user_id = (select auth.uid()),
+    updated_at = now()
+  where u.auth_user_id is null
+    and lower(u.email) = auth_email
+  returning * into claimed_profile;
+
+  return claimed_profile;
+end;
+$$;
+
 create or replace function public.is_current_app_user(target_user_id uuid)
 returns boolean
 language sql
@@ -145,6 +187,7 @@ revoke all on function public.current_app_user_id() from public;
 revoke all on function public.current_app_user_outlet_id() from public;
 revoke all on function public.is_active_app_user() from public;
 revoke all on function public.is_admin() from public;
+revoke all on function public.claim_user_profile() from public;
 revoke all on function public.is_current_app_user(uuid) from public;
 revoke all on function public.owns_outlet(uuid) from public;
 revoke all on function public.can_access_campaign(uuid) from public;
@@ -154,6 +197,7 @@ grant execute on function public.current_app_user_id() to authenticated;
 grant execute on function public.current_app_user_outlet_id() to authenticated;
 grant execute on function public.is_active_app_user() to authenticated;
 grant execute on function public.is_admin() to authenticated;
+grant execute on function public.claim_user_profile() to authenticated;
 grant execute on function public.is_current_app_user(uuid) to authenticated;
 grant execute on function public.owns_outlet(uuid) to authenticated;
 grant execute on function public.can_access_campaign(uuid) to authenticated;
