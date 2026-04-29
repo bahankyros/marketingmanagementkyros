@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Save, RefreshCw, Settings as SettingsIcon, 
@@ -271,6 +271,7 @@ export function Settings() {
 
   const [outlets, setOutlets] = useState<OutletRecord[]>([]);
   const [newOutlet, setNewOutlet] = useState({ name: '', baseSales: '' });
+  const [editingOutlet, setEditingOutlet] = useState<string | null>(null);
   const [checklistTemplates, setChecklistTemplates] = useState<any[]>([]);
   const [loadingTemplates, setLoadingTemplates] = useState(true);
   const [templateForm, setTemplateForm] = useState<ChecklistTemplateFormState>(buildEmptyChecklistTemplateForm());
@@ -293,6 +294,24 @@ export function Settings() {
   const [isImportingSales, setIsImportingSales] = useState(false);
   const [budgetHistory, setBudgetHistory] = useState<BudgetHistoryRecord[]>([]);
   const [loadingBudgetHistory, setLoadingBudgetHistory] = useState(true);
+
+  const fetchOutlets = useCallback(async () => {
+    const { data, error } = await supabase
+      .from('outlets')
+      .select('id, name, base_sales, is_active, display_order')
+      .order('display_order', { ascending: true })
+      .order('name', { ascending: true });
+
+    if (error) {
+      console.error('Error fetching outlets:', error);
+      return;
+    }
+
+    setOutlets((data || []).flatMap((outlet) => {
+      const normalizedOutlet = normalizeOutletRecord(outlet);
+      return normalizedOutlet ? [normalizedOutlet] : [];
+    }));
+  }, []);
 
   useEffect(() => {
     if (!user) return;
@@ -320,24 +339,6 @@ export function Settings() {
       }
     };
 
-    const fetchOutlets = async () => {
-      const { data, error } = await supabase
-        .from('outlets')
-        .select('id, name, base_sales, is_active, display_order')
-        .order('display_order', { ascending: true })
-        .order('name', { ascending: true });
-
-      if (error) {
-        console.error('Error fetching outlets:', error);
-        return;
-      }
-
-      setOutlets((data || []).flatMap((outlet) => {
-        const normalizedOutlet = normalizeOutletRecord(outlet);
-        return normalizedOutlet ? [normalizedOutlet] : [];
-      }));
-    };
-
     const outletsChannel = supabase
       .channel('settings-outlets')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'outlets' }, () => {
@@ -358,7 +359,7 @@ export function Settings() {
       void supabase.removeChannel(outletsChannel);
       void supabase.removeChannel(globalsChannel);
     };
-  }, [user]);
+  }, [user, fetchOutlets]);
 
   useEffect(() => {
     if (!user || !canViewChecklistTemplates) {
@@ -536,7 +537,21 @@ export function Settings() {
     }
   };
 
-  const handleAddOutlet = async (e: React.FormEvent) => {
+  const resetOutletForm = () => {
+    setNewOutlet({ name: '', baseSales: '' });
+    setEditingOutlet(null);
+  };
+
+  const handleEditOutlet = (outlet: OutletRecord) => {
+    if (!canManageSettings) return;
+    setEditingOutlet(outlet.id);
+    setNewOutlet({
+      name: outlet.name,
+      baseSales: String(outlet.baseSales || '')
+    });
+  };
+
+  const handleOutletSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canManageSettings || !newOutlet.name) return;
 
@@ -544,31 +559,37 @@ export function Settings() {
     if (!outletName) return;
 
     try {
-      const { data, error } = await supabase
-        .from('outlets')
-        .insert({
-          name: outletName,
-          base_sales: Number(newOutlet.baseSales) || 0,
-          is_active: true,
-          display_order: outlets.length + 1,
-          created_at: nowIso(),
-          updated_at: nowIso()
-        })
-        .select('id, name, base_sales, is_active, display_order')
-        .single();
+      const baseSales = Number(newOutlet.baseSales) || 0;
+      const timestamp = nowIso();
+
+      const { error } = editingOutlet
+        ? await supabase
+            .from('outlets')
+            .update({
+              name: outletName,
+              base_sales: baseSales,
+              updated_at: timestamp
+            })
+            .eq('id', editingOutlet)
+        : await supabase
+            .from('outlets')
+            .insert({
+              name: outletName,
+              base_sales: baseSales,
+              is_active: true,
+              display_order: outlets.length + 1,
+              created_at: timestamp,
+              updated_at: timestamp
+            });
 
       if (error) {
         throw error;
       }
 
-      const normalizedOutlet = normalizeOutletRecord(data);
-      if (normalizedOutlet) {
-        setOutlets((current) => [...current, normalizedOutlet].sort((left, right) => left.order - right.order || left.name.localeCompare(right.name)));
-      }
-
-      setNewOutlet({ name: '', baseSales: '' });
+      await fetchOutlets();
+      resetOutletForm();
     } catch (error) {
-      console.error('Error adding outlet:', error);
+      console.error(`Error ${editingOutlet ? 'updating' : 'adding'} outlet:`, error);
     }
   };
 
@@ -585,9 +606,14 @@ export function Settings() {
         throw error;
       }
 
-      setOutlets((current) => current.filter((outlet) => outlet.id !== id));
+      if (editingOutlet === id) {
+        resetOutletForm();
+      }
+
+      await fetchOutlets();
     } catch (error) {
       console.error('Error deleting outlet:', error);
+      window.alert('This outlet cannot be deleted because it is currently in use by assigned users or related records.');
     }
   };
 
@@ -1306,7 +1332,22 @@ export function Settings() {
           </h2>
 
           {canManageSettings ? (
-            <form onSubmit={handleAddOutlet} className="mb-8 p-4 bg-neutral-50 rounded-2xl border border-neutral-100 space-y-4">
+            <form onSubmit={handleOutletSubmit} className="mb-8 p-4 bg-neutral-50 rounded-2xl border border-neutral-100 space-y-4">
+               <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm font-bold text-neutral-800">
+                    {editingOutlet ? 'Edit Outlet' : 'Add New Outlet'}
+                  </p>
+                  {editingOutlet && (
+                    <button
+                      type="button"
+                      onClick={resetOutletForm}
+                      className="inline-flex items-center gap-1.5 text-xs font-semibold text-neutral-500 hover:text-neutral-900 transition-colors"
+                    >
+                      <X size={14} />
+                      Cancel
+                    </button>
+                  )}
+               </div>
                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <input 
                     required
@@ -1325,7 +1366,8 @@ export function Settings() {
                   />
                </div>
                <button type="submit" className="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold py-2.5 rounded-xl transition-all flex items-center justify-center gap-2 shadow-sm">
-                  <Plus size={18} /> Add Outlet
+                  {editingOutlet ? <Pencil size={18} /> : <Plus size={18} />}
+                  {editingOutlet ? 'Update Outlet' : 'Add Outlet'}
                </button>
             </form>
           ) : (
@@ -1347,12 +1389,24 @@ export function Settings() {
                       </div>
                    </div>
                    {canManageSettings && (
-                     <button 
-                      onClick={() => handleDeleteOutlet(outlet.id)}
-                      className="p-2 text-neutral-300 hover:text-rose-500 transition-colors"
-                     >
-                       <Trash2 size={18} />
-                     </button>
+                     <div className="flex items-center gap-2">
+                       <button
+                        type="button"
+                        onClick={() => handleEditOutlet(outlet)}
+                        className="p-2 text-neutral-300 hover:text-teal-600 transition-colors"
+                        aria-label={`Edit ${outlet.name}`}
+                       >
+                         <Pencil size={18} />
+                       </button>
+                       <button
+                        type="button"
+                        onClick={() => handleDeleteOutlet(outlet.id)}
+                        className="p-2 text-neutral-300 hover:text-rose-500 transition-colors"
+                        aria-label={`Delete ${outlet.name}`}
+                       >
+                         <Trash2 size={18} />
+                       </button>
+                     </div>
                    )}
                 </div>
              ))}
