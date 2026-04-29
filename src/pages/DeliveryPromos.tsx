@@ -287,8 +287,8 @@ export function DeliveryPromos() {
   const [isDragging, setIsDragging] = useState(false);
   const [feedback, setFeedback] = useState<UploadFeedback>(null);
   const [selectedMerchant, setSelectedMerchant] = useState('All Outlets');
-  const normalizedRole = userData?.role?.toLowerCase().trim();
-  const canUploadGrabCsv = Boolean(normalizedRole && normalizedRole !== 'pic');
+  const role = userData?.role?.toLowerCase().trim();
+  const isAdmin = role === 'admin';
 
   const loadDailySales = useCallback(async () => {
     setLoading(true);
@@ -365,7 +365,7 @@ export function DeliveryPromos() {
   );
 
   const handleFiles = async (fileList: FileList | File[]) => {
-    if (!canUploadGrabCsv) return;
+    if (!isAdmin) return;
 
     const file = fileList[0];
     if (!file) return;
@@ -423,7 +423,7 @@ export function DeliveryPromos() {
           </p>
         </div>
 
-        {canUploadGrabCsv && (
+        {isAdmin && (
           <label
             onDragOver={(event) => {
               event.preventDefault();
