@@ -26,6 +26,7 @@ import {
 } from 'recharts';
 import { supabase } from '../lib/supabase';
 import { subscribeToTable } from '../lib/supabaseData';
+import { useAuth } from '../lib/AuthContext';
 
 type GrabDailySalesRow = {
   id: string;
@@ -278,6 +279,7 @@ function buildWeekdayHeatmap(rows: GrabDailySalesRow[]) {
 }
 
 export function DeliveryPromos() {
+  const { userData } = useAuth();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [rows, setRows] = useState<GrabDailySalesRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -285,6 +287,8 @@ export function DeliveryPromos() {
   const [isDragging, setIsDragging] = useState(false);
   const [feedback, setFeedback] = useState<UploadFeedback>(null);
   const [selectedMerchant, setSelectedMerchant] = useState('All Outlets');
+  const normalizedRole = userData?.role?.toLowerCase().trim();
+  const canUploadGrabCsv = Boolean(normalizedRole && normalizedRole !== 'pic');
 
   const loadDailySales = useCallback(async () => {
     setLoading(true);
@@ -361,6 +365,8 @@ export function DeliveryPromos() {
   );
 
   const handleFiles = async (fileList: FileList | File[]) => {
+    if (!canUploadGrabCsv) return;
+
     const file = fileList[0];
     if (!file) return;
 
@@ -417,30 +423,32 @@ export function DeliveryPromos() {
           </p>
         </div>
 
-        <label
-          onDragOver={(event) => {
-            event.preventDefault();
-            setIsDragging(true);
-          }}
-          onDragLeave={() => setIsDragging(false)}
-          onDrop={handleDrop}
-          className={`flex min-h-28 cursor-pointer flex-col items-center justify-center rounded-2xl border border-dashed px-6 py-5 text-center transition-colors lg:min-w-80 ${
-            isDragging
-              ? 'border-orange-400 bg-orange-50 text-orange-700'
-              : 'border-neutral-200 bg-white text-neutral-600 hover:border-orange-300 hover:bg-orange-50/60'
-          }`}
-        >
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".csv,text/csv"
-            onChange={handleFileInputChange}
-            className="hidden"
-          />
-          {uploading ? <CircleDashed className="mb-2 h-6 w-6 animate-spin" /> : <Upload className="mb-2 h-6 w-6" />}
-          <span className="text-sm font-bold">{uploading ? 'Uploading Grab CSV...' : 'Upload Grab CSV'}</span>
-          <span className="mt-1 text-xs text-neutral-500">Drop file here or click to browse</span>
-        </label>
+        {canUploadGrabCsv && (
+          <label
+            onDragOver={(event) => {
+              event.preventDefault();
+              setIsDragging(true);
+            }}
+            onDragLeave={() => setIsDragging(false)}
+            onDrop={handleDrop}
+            className={`flex min-h-28 cursor-pointer flex-col items-center justify-center rounded-2xl border border-dashed px-6 py-5 text-center transition-colors lg:min-w-80 ${
+              isDragging
+                ? 'border-orange-400 bg-orange-50 text-orange-700'
+                : 'border-neutral-200 bg-white text-neutral-600 hover:border-orange-300 hover:bg-orange-50/60'
+            }`}
+          >
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".csv,text/csv"
+              onChange={handleFileInputChange}
+              className="hidden"
+            />
+            {uploading ? <CircleDashed className="mb-2 h-6 w-6 animate-spin" /> : <Upload className="mb-2 h-6 w-6" />}
+            <span className="text-sm font-bold">{uploading ? 'Uploading Grab CSV...' : 'Upload Grab CSV'}</span>
+            <span className="mt-1 text-xs text-neutral-500">Drop file here or click to browse</span>
+          </label>
+        )}
       </header>
 
       {feedback && (
