@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { MonitorPlay, Target, ImageIcon, CheckCircle, Clock, X, Upload } from 'lucide-react';
 import { useAuth } from '../lib/AuthContext';
+import { createPrivateStorageUrl, extractStorageObjectPath } from '../lib/privateStorage';
 import { useCampaigns } from '../lib/useCampaigns';
 import { supabase } from '../lib/supabase';
 import { nowIso, subscribeToTable, toNullableDate, toNullableUuid } from '../lib/supabaseData';
@@ -19,6 +20,8 @@ function normalizeMallDisplay(row: any, masterOutlets: MasterOutlet[]) {
     || masterOutlets.find((outlet) => outlet.name === row.outlet_name)
     || null;
   const outletName = resolvedOutlet?.name || row.outlet_name || '';
+  const proofImageUrl = row.proof_image_url || row.photo_proof_url || '';
+  const proofImagePath = row.proof_image_path || extractStorageObjectPath('mall-display-proofs', proofImageUrl);
 
   return {
     id: row.id,
@@ -36,9 +39,9 @@ function normalizeMallDisplay(row: any, masterOutlets: MasterOutlet[]) {
     mallPicContact: row.mall_pic_contact || '',
     remarks: row.remarks || '',
     proofText: row.proof_text || '',
-    proofImageUrl: row.proof_image_url || '',
-    proofImagePath: row.proof_image_path || '',
-    photoProof: row.photo_proof_url || row.proof_image_url || '',
+    proofImageUrl,
+    proofImagePath,
+    photoProof: proofImagePath || proofImageUrl,
     createdAt: row.created_at || '',
     updatedAt: row.updated_at || ''
   };
@@ -51,6 +54,7 @@ export function MallDisplays() {
   const [masterOutlets, setMasterOutlets] = useState<MasterOutlet[]>([]);
   const [loading, setLoading] = useState(true);
   const [editingSlot, setEditingSlot] = useState<any>(null);
+  const [editingSlotProofUrl, setEditingSlotProofUrl] = useState('');
   const [isUploading, setIsUploading] = useState(false);
   const isAdmin = userData?.role === 'admin';
   const isSupervisor = userData?.role === 'supervisor';
@@ -58,6 +62,34 @@ export function MallDisplays() {
   const outletGroups = masterOutlets.length > 0
     ? masterOutlets
     : LEGACY_OUTLET_NAMES.map((name) => ({ id: name, name }));
+
+  useEffect(() => {
+    const proofSource = editingSlot?.proofImagePath || editingSlot?.photoProof || editingSlot?.proofImageUrl || '';
+    if (!proofSource) {
+      setEditingSlotProofUrl('');
+      return;
+    }
+
+    let isMounted = true;
+    setEditingSlotProofUrl('');
+
+    createPrivateStorageUrl('mall-display-proofs', proofSource)
+      .then((url) => {
+        if (isMounted) {
+          setEditingSlotProofUrl(url);
+        }
+      })
+      .catch((error) => {
+        console.error('Error creating mall display proof signed URL:', error);
+        if (isMounted) {
+          setEditingSlotProofUrl(/^https?:\/\//i.test(proofSource) ? proofSource : '');
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [editingSlot?.proofImagePath, editingSlot?.photoProof, editingSlot?.proofImageUrl]);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -72,14 +104,13 @@ export function MallDisplays() {
 
       if (error) throw error;
 
-      const { data } = supabase.storage
-        .from('mall-display-proofs')
-        .getPublicUrl(filePath);
+      const signedUrl = await createPrivateStorageUrl('mall-display-proofs', filePath);
 
+      setEditingSlotProofUrl(signedUrl);
       setEditingSlot({
         ...editingSlot,
-        photoProof: data.publicUrl,
-        proofImageUrl: data.publicUrl,
+        photoProof: filePath,
+        proofImageUrl: '',
         proofImagePath: filePath
       });
     } catch (error) {
@@ -160,6 +191,7 @@ export function MallDisplays() {
     if (!outletId) {
       throw new Error('This display slot needs a Supabase outlet before it can be saved.');
     }
+    const proofImagePath = slot.proofImagePath || extractStorageObjectPath('mall-display-proofs', slot.photoProof || slot.proofImageUrl);
 
     return {
       outlet_id: outletId,
@@ -175,9 +207,9 @@ export function MallDisplays() {
       mall_pic_contact: slot.mallPicContact || '',
       remarks: slot.remarks || '',
       proof_text: slot.proofText || '',
-      proof_image_url: slot.proofImageUrl || slot.photoProof || '',
-      proof_image_path: slot.proofImagePath || '',
-      photo_proof_url: slot.photoProof || '',
+      proof_image_url: '',
+      proof_image_path: proofImagePath || '',
+      photo_proof_url: proofImagePath || '',
       updated_at: nowIso()
     };
   };
@@ -216,11 +248,12 @@ export function MallDisplays() {
 
         if (error) throw error;
       } else {
+        const proofImagePath = editingSlot.proofImagePath || extractStorageObjectPath('mall-display-proofs', editingSlot.photoProof || editingSlot.proofImageUrl);
         const supervisorPayload: Record<string, any> = {
           current_status: editingSlot.currentStatus || 'Draft',
-          proof_image_url: editingSlot.proofImageUrl || editingSlot.photoProof || '',
-          proof_image_path: editingSlot.proofImagePath || '',
-          photo_proof_url: editingSlot.photoProof || '',
+          proof_image_url: '',
+          proof_image_path: proofImagePath || '',
+          photo_proof_url: proofImagePath || '',
           updated_at: nowIso()
         };
 
@@ -462,9 +495,9 @@ export function MallDisplays() {
                   <div className="pt-4 border-t border-neutral-100">
                      <h4 className="font-medium text-neutral-900 mb-2">Proof photo</h4>
                      <div className="flex items-center gap-4">
-                         {editingSlot.photoProof ? (
-                            <a href={editingSlot.photoProof} target="_blank" rel="noreferrer" className="w-16 h-16 rounded-xl border border-neutral-200 overflow-hidden block">
-                              <img src={editingSlot.photoProof} alt="Proof" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                         {editingSlotProofUrl ? (
+                            <a href={editingSlotProofUrl} target="_blank" rel="noreferrer" className="w-16 h-16 rounded-xl border border-neutral-200 overflow-hidden block">
+                              <img src={editingSlotProofUrl} alt="Proof" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                             </a>
                          ) : (
                             <div className="w-16 h-16 rounded-xl border border-dashed border-neutral-300 bg-neutral-50 flex items-center justify-center text-neutral-400">

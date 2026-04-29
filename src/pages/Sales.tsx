@@ -398,51 +398,23 @@ export function Sales() {
           updated_at: timestamp
       }));
 
-      const { error: salesError } = await supabase
-        .from('sales')
-        .upsert(salesPayload, { onConflict: 'month_key,outlet_id' });
+      const { data: importResult, error: importError } = await supabase.rpc('import_sales_budget', {
+        p_sales_rows: salesPayload,
+        p_source_file_name: salesImportPreview.fileName,
+        p_source_batch_id: csvBatchId
+      });
 
-      if (salesError) throw salesError;
+      if (importError) throw importError;
 
-      const budgetPayload = Array.from(monthlyRollupMap.entries()).map(([monthKey, salesRollupTotal]) => ({
-          month_key: monthKey,
-          sales_rollup_total: salesRollupTotal,
-          budget_rate: 0.02,
-          marketing_budget_total: roundCurrency(salesRollupTotal * 0.02),
-          locked: true,
-          locked_at: timestamp,
-          source_file_name: salesImportPreview.fileName,
-          calculated_by_user_id: userData.id,
-          created_at: timestamp,
-          updated_at: timestamp
-      }));
-
-      const { data: budgets, error: budgetError } = await supabase
-        .from('budgets')
-        .upsert(budgetPayload, { onConflict: 'month_key' })
-        .select('id, month_key');
-
-      if (budgetError) throw budgetError;
-
-      const budgetSourcePayload = (budgets || []).map((budget) => ({
-        budget_id: budget.id,
-        source_batch_id: csvBatchId,
-        created_at: timestamp
-      }));
-
-      if (budgetSourcePayload.length > 0) {
-        const { error: sourceError } = await supabase
-          .from('budget_source_batches')
-          .upsert(budgetSourcePayload, { onConflict: 'budget_id,source_batch_id' });
-
-        if (sourceError) throw sourceError;
-      }
+      const importSummary = Array.isArray(importResult) ? importResult[0] : null;
+      const importedSalesCount = Number(importSummary?.sales_count ?? salesDocMap.size);
+      const importedBudgetCount = Number(importSummary?.budget_count ?? monthlyRollupMap.size);
 
       setParsedSalesImportRows([]);
       setSalesImportPreview(null);
       setSalesImportFeedback({
         tone: 'success',
-        message: `Import complete. ${salesDocMap.size} sales doc${salesDocMap.size === 1 ? '' : 's'}, ${monthlyRollupMap.size} budget doc${monthlyRollupMap.size === 1 ? '' : 's'}.`
+        message: `Import complete. ${importedSalesCount} sales doc${importedSalesCount === 1 ? '' : 's'}, ${importedBudgetCount} budget doc${importedBudgetCount === 1 ? '' : 's'}.`
       });
     } catch (error) {
       console.error('Error importing sales data:', error);

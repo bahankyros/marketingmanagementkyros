@@ -262,6 +262,25 @@ create table public.delivery_promos (
   check (end_date is null or start_date is null or end_date >= start_date)
 );
 
+create table public.grab_daily_sales (
+  id uuid default gen_random_uuid() primary key,
+  date date not null,
+  country text not null default '',
+  city text not null default '',
+  merchant text not null,
+  grab_service text not null default '',
+  gross_sales numeric(14,2) not null default 0 check (gross_sales >= 0),
+  net_sales numeric(14,2) not null default 0 check (net_sales >= 0),
+  transactions integer not null default 0 check (transactions >= 0),
+  average_transaction_amount numeric(14,2) not null default 0 check (average_transaction_amount >= 0),
+  average_rating numeric(3,2) not null default 0 check (average_rating >= 0 and average_rating <= 5),
+  source_file_name text not null default '',
+  uploaded_by_user_id uuid references public.users(id) on delete set null,
+  imported_at timestamp with time zone not null default now(),
+  created_at timestamp with time zone not null default now(),
+  updated_at timestamp with time zone not null default now()
+);
+
 create table public.social_posts (
   id uuid default gen_random_uuid() primary key,
   platform text not null default 'Instagram',
@@ -408,6 +427,9 @@ create index if not exists mascot_schedule_outlet_id_idx on public.mascot_schedu
 create index if not exists blog_outreach_pic_user_id_idx on public.blog_outreach(pic_user_id);
 create index if not exists delivery_promos_campaign_id_idx on public.delivery_promos(campaign_id);
 create index if not exists delivery_promos_pic_user_id_idx on public.delivery_promos(pic_user_id);
+create index if not exists grab_daily_sales_date_idx on public.grab_daily_sales(date);
+create index if not exists grab_daily_sales_merchant_idx on public.grab_daily_sales(merchant);
+create index if not exists grab_daily_sales_uploaded_by_user_id_idx on public.grab_daily_sales(uploaded_by_user_id);
 create index if not exists social_posts_campaign_id_idx on public.social_posts(campaign_id);
 create index if not exists social_posts_outlet_id_idx on public.social_posts(outlet_id);
 create index if not exists social_posts_author_user_id_idx on public.social_posts(author_user_id);

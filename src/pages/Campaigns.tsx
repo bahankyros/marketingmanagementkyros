@@ -5,6 +5,7 @@ import {
   Megaphone, Smartphone, ChevronRight, CheckCircle2, Circle, ArrowLeft, CheckSquare, Clock, ImageIcon, Upload, Pencil, Trash2, X, AlertTriangle
 } from 'lucide-react';
 import { useAuth } from '../lib/AuthContext';
+import { createPrivateStorageUrl } from '../lib/privateStorage';
 import { supabase } from '../lib/supabase';
 import { normalizeCampaign, nowIso, subscribeToTable, toNullableDate, toNullableUuid } from '../lib/supabaseData';
 
@@ -223,6 +224,7 @@ export function Campaigns() {
   const [selectedCampaign, setSelectedCampaign] = useState<any>(null);
   const [checklist, setChecklist] = useState<any[]>([]);
   const [isUploading, setIsUploading] = useState(false);
+  const [campaignAssetUrl, setCampaignAssetUrl] = useState('');
   const [editingCampaign, setEditingCampaign] = useState<CampaignEditFormState | null>(null);
   const [isSavingCampaign, setIsSavingCampaign] = useState(false);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
@@ -230,6 +232,34 @@ export function Campaigns() {
   const [checklistTemplates, setChecklistTemplates] = useState<CampaignChecklistTemplate[]>([]);
   const [loadingChecklistTemplates, setLoadingChecklistTemplates] = useState(false);
   const [selectedChecklistTemplateId, setSelectedChecklistTemplateId] = useState('');
+
+  useEffect(() => {
+    const assetSource = selectedCampaign?.assetUrl || '';
+    if (!assetSource) {
+      setCampaignAssetUrl('');
+      return;
+    }
+
+    let isMounted = true;
+    setCampaignAssetUrl('');
+
+    createPrivateStorageUrl('campaign-assets', assetSource)
+      .then((url) => {
+        if (isMounted) {
+          setCampaignAssetUrl(url);
+        }
+      })
+      .catch((error) => {
+        console.error('Error creating campaign asset signed URL:', error);
+        if (isMounted) {
+          setCampaignAssetUrl(/^https?:\/\//i.test(assetSource) ? assetSource : '');
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [selectedCampaign?.assetUrl]);
 
   const handleAssetUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -244,20 +274,18 @@ export function Campaigns() {
 
       if (uploadError) throw uploadError;
 
-      const { data } = supabase.storage
-        .from('campaign-assets')
-        .getPublicUrl(filePath);
-      const url = data.publicUrl;
+      const signedUrl = await createPrivateStorageUrl('campaign-assets', filePath);
 
       const { error } = await supabase
         .from('campaigns')
-        .update({ asset_url: url, updated_at: nowIso() })
+        .update({ asset_url: filePath, updated_at: nowIso() })
         .eq('id', selectedCampaign.id);
 
       if (error) throw error;
       
-      setSelectedCampaign({ ...selectedCampaign, assetUrl: url });
-      setCampaigns(prev => prev.map(camp => camp.id === selectedCampaign.id ? { ...camp, assetUrl: url } : camp));
+      setCampaignAssetUrl(signedUrl);
+      setSelectedCampaign({ ...selectedCampaign, assetUrl: filePath });
+      setCampaigns(prev => prev.map(camp => camp.id === selectedCampaign.id ? { ...camp, assetUrl: filePath } : camp));
       setFeedback({ tone: 'success', message: 'Campaign asset uploaded successfully.' });
     } catch (error) {
       console.error("Error uploading file:", error);
@@ -1009,9 +1037,9 @@ export function Campaigns() {
                 </h3>
                 <div className="space-y-4">
                    <div className="flex items-center gap-4">
-                      {selectedCampaign.assetUrl ? (
-                         <a href={selectedCampaign.assetUrl} target="_blank" rel="noreferrer" className="w-20 h-20 rounded-xl border border-neutral-200 overflow-hidden block shrink-0">
-                            <img src={selectedCampaign.assetUrl} alt="Asset" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                      {campaignAssetUrl ? (
+                         <a href={campaignAssetUrl} target="_blank" rel="noreferrer" className="w-20 h-20 rounded-xl border border-neutral-200 overflow-hidden block shrink-0">
+                            <img src={campaignAssetUrl} alt="Asset" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                          </a>
                       ) : (
                          <div className="w-20 h-20 rounded-xl border border-dashed border-neutral-300 bg-neutral-50 flex items-center justify-center text-neutral-400 shrink-0">

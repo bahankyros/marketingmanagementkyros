@@ -53,6 +53,8 @@ type GrabDailySalesInsert = {
   transactions: number;
   average_transaction_amount: number;
   average_rating: number;
+  source_file_name?: string;
+  uploaded_by_user_id?: string | null;
 };
 
 type UploadFeedback = {
@@ -375,9 +377,14 @@ export function DeliveryPromos() {
 
     try {
       const cleanedRows = await parseGrabDailyCsv(file);
+      const rowsToInsert = cleanedRows.map((row) => ({
+        ...row,
+        source_file_name: file.name,
+        uploaded_by_user_id: userData?.id || null
+      }));
       const { error } = await supabase
         .from('grab_daily_sales')
-        .insert(cleanedRows);
+        .insert(rowsToInsert);
 
       if (error) throw error;
 

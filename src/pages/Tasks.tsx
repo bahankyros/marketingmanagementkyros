@@ -13,6 +13,7 @@ import {
   X
 } from 'lucide-react';
 import { useAuth } from '../lib/AuthContext';
+import { createPrivateStorageUrl, extractStorageObjectPath } from '../lib/privateStorage';
 import { supabase } from '../lib/supabase';
 
 type TaskType = 'mall_display' | 'voucher_follow_up' | 'general';
@@ -149,8 +150,9 @@ function buildDefaultCreateForm() {
 }
 
 function buildUploadState(url = '', path = ''): UploadState {
-  return url && path
-    ? { status: 'uploaded', url, path, error: null }
+  const normalizedPath = path || extractStorageObjectPath('task-proofs', url);
+  return normalizedPath
+    ? { status: 'uploaded', url, path: normalizedPath, error: null }
     : { status: 'idle', url: '', path: '', error: null };
 }
 
@@ -172,6 +174,11 @@ function statusTone(status: TaskStatus) {
 }
 
 function normalizeTask(row: any): TaskRecord {
+  const proofImageUrl = typeof row.proof_image_url === 'string' ? row.proof_image_url : '';
+  const proofImagePath = typeof row.proof_image_path === 'string' && row.proof_image_path.trim()
+    ? row.proof_image_path
+    : extractStorageObjectPath('task-proofs', proofImageUrl);
+
   return {
     id: typeof row.id === 'string' ? row.id : '',
     title: typeof row.title === 'string' ? row.title : '',
@@ -184,8 +191,8 @@ function normalizeTask(row: any): TaskRecord {
     status: (row.status as TaskStatus) || 'assigned',
     dueAt: normalizeDate(row.due_at),
     proofText: typeof row.proof_text === 'string' ? row.proof_text : '',
-    proofImageUrl: typeof row.proof_image_url === 'string' ? row.proof_image_url : '',
-    proofImagePath: typeof row.proof_image_path === 'string' ? row.proof_image_path : '',
+    proofImageUrl,
+    proofImagePath,
     createdAt: normalizeDate(row.created_at),
     updatedAt: normalizeDate(row.updated_at)
   };
@@ -218,8 +225,37 @@ export function Tasks() {
   const [proofTextDraft, setProofTextDraft] = useState('');
   const [adminReviewStatus, setAdminReviewStatus] = useState<'approved' | 'rejected' | 'completed'>('approved');
   const [proofUpload, setProofUpload] = useState<UploadState>(buildUploadState());
+  const [selectedTaskProofUrl, setSelectedTaskProofUrl] = useState('');
   const [feedback, setFeedback] = useState<FeedbackState>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    const proofSource = selectedTask?.proofImagePath || selectedTask?.proofImageUrl || '';
+    if (!proofSource) {
+      setSelectedTaskProofUrl('');
+      return;
+    }
+
+    let isMounted = true;
+    setSelectedTaskProofUrl('');
+
+    createPrivateStorageUrl('task-proofs', proofSource)
+      .then((url) => {
+        if (isMounted) {
+          setSelectedTaskProofUrl(url);
+        }
+      })
+      .catch((error) => {
+        console.error('Error creating task proof signed URL:', error);
+        if (isMounted) {
+          setSelectedTaskProofUrl(/^https?:\/\//i.test(proofSource) ? proofSource : '');
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [selectedTask?.proofImagePath, selectedTask?.proofImageUrl]);
 
   useEffect(() => {
     if (!user || !userData) {
@@ -507,9 +543,8 @@ export function Tasks() {
 
       if (uploadError) throw uploadError;
 
-      const { data } = supabase.storage.from('task-proofs').getPublicUrl(fullPath);
-      const url = data.publicUrl;
-      setProofUpload({ status: 'uploaded', url, path: fullPath, error: null });
+      const signedUrl = await createPrivateStorageUrl('task-proofs', fullPath);
+      setProofUpload({ status: 'uploaded', url: signedUrl, path: fullPath, error: null });
     } catch (error) {
       console.error('Error uploading task proof:', error);
       setProofUpload({ status: 'error', url: '', path: '', error: 'Proof upload failed.' });
@@ -534,7 +569,7 @@ export function Tasks() {
         .update({
           status: supervisorStatus,
           proof_text: proofTextDraft.trim(),
-          proof_image_url: proofUpload.url || selectedTask.proofImageUrl || '',
+          proof_image_url: '',
           proof_image_path: proofUpload.path || selectedTask.proofImagePath || '',
           updated_at: nowIso()
         })
@@ -955,9 +990,9 @@ export function Tasks() {
                 <div className="rounded-2xl border border-neutral-100 p-4">
                   <p className="text-sm font-medium text-neutral-900">Proof</p>
                   <p className="mt-2 text-sm text-neutral-500">{selectedTask.proofText || 'No proof yet.'}</p>
-                  {selectedTask.proofImageUrl && (
+                  {selectedTaskProofUrl && (
                     <a
-                      href={selectedTask.proofImageUrl}
+                      href={selectedTaskProofUrl}
                       target="_blank"
                       rel="noreferrer"
                       className="mt-4 inline-flex items-center gap-2 text-sm font-medium text-indigo-600 hover:text-indigo-700"

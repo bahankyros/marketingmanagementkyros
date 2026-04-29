@@ -15,6 +15,7 @@ import {
   X
 } from 'lucide-react';
 import { useAuth } from '../lib/AuthContext';
+import { createPrivateStorageUrl, extractStorageObjectPath } from '../lib/privateStorage';
 import { supabase } from '../lib/supabase';
 import { useCampaigns } from '../lib/useCampaigns';
 
@@ -264,8 +265,37 @@ export function Events() {
   const [currentMonth, setCurrentMonth] = useState(() => startOfMonth(new Date()));
   const [selectedDate, setSelectedDate] = useState(() => new Date());
   const [editorState, setEditorState] = useState<EventEditorState | null>(null);
+  const [eventPhotoUrl, setEventPhotoUrl] = useState('');
   const [isUploading, setIsUploading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    const photoSource = editorState?.photos || '';
+    if (!photoSource) {
+      setEventPhotoUrl('');
+      return;
+    }
+
+    let isMounted = true;
+    setEventPhotoUrl('');
+
+    createPrivateStorageUrl('event-proofs', photoSource)
+      .then((url) => {
+        if (isMounted) {
+          setEventPhotoUrl(url);
+        }
+      })
+      .catch((error) => {
+        console.error('Error creating event proof signed URL:', error);
+        if (isMounted) {
+          setEventPhotoUrl(/^https?:\/\//i.test(photoSource) ? photoSource : '');
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [editorState?.photos]);
 
   useEffect(() => {
     if (!user || !canViewEvents) {
@@ -427,9 +457,9 @@ export function Events() {
 
       if (uploadError) throw uploadError;
 
-      const { data } = supabase.storage.from('event-proofs').getPublicUrl(fullPath);
-      const url = data.publicUrl;
-      setEditorState((current) => current ? { ...current, photos: url } : current);
+      const signedUrl = await createPrivateStorageUrl('event-proofs', fullPath);
+      setEventPhotoUrl(signedUrl);
+      setEditorState((current) => current ? { ...current, photos: fullPath } : current);
     } catch (error) {
       console.error('Error uploading file:', error);
       alert('Photo upload failed.');
@@ -472,7 +502,7 @@ export function Events() {
       vouchers_distributed: Number(editorState.vouchersDistributed) || 0,
       vouchers_redeemed: Number(editorState.vouchersRedeemed) || 0,
       notes: editorState.notes.trim(),
-      photos: editorState.photos,
+      photos: extractStorageObjectPath('event-proofs', editorState.photos) || editorState.photos,
       start_at: startDate.toISOString(),
       end_at: endDate.toISOString(),
       proposed_date: formatDateInput(startDate),
@@ -979,9 +1009,9 @@ export function Events() {
                   <div className="space-y-2 pt-2 border-t border-neutral-100">
                     <label className="text-sm font-medium text-neutral-700">Proof photo</label>
                     <div className="flex items-center gap-4">
-                      {editorState.photos ? (
-                        <a href={editorState.photos} target="_blank" rel="noreferrer" className="w-16 h-16 rounded-xl border border-neutral-200 overflow-hidden block">
-                          <img src={editorState.photos} alt="Proof" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                      {eventPhotoUrl ? (
+                        <a href={eventPhotoUrl} target="_blank" rel="noreferrer" className="w-16 h-16 rounded-xl border border-neutral-200 overflow-hidden block">
+                          <img src={eventPhotoUrl} alt="Proof" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                         </a>
                       ) : (
                         <div className="w-16 h-16 rounded-xl border border-dashed border-neutral-300 bg-neutral-50 flex items-center justify-center text-neutral-400">

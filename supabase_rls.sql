@@ -127,6 +127,124 @@ as $$
     and target_outlet_id = (select public.current_app_user_outlet_id())
 $$;
 
+create or replace function public.owns_merchant(target_merchant text)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select target_merchant is not null
+    and btrim(target_merchant) <> ''
+    and exists (
+      select 1
+      from public.users u
+      join public.outlets o on o.id = u.outlet_id
+      where u.auth_user_id = (select auth.uid())
+        and u.status = 'active'
+        and lower(btrim(o.name)) = lower(btrim(target_merchant))
+    )
+$$;
+
+create or replace function public.storage_path_uuid(object_name text, segment_index integer)
+returns uuid
+language plpgsql
+immutable
+set search_path = ''
+as $$
+declare
+  path_segments text[];
+begin
+  if object_name is null or segment_index < 1 then
+    return null;
+  end if;
+
+  path_segments := storage.foldername(object_name);
+  return path_segments[segment_index]::uuid;
+exception
+  when others then
+    return null;
+end;
+$$;
+
+create or replace function public.storage_path_segment(object_name text, segment_index integer)
+returns text
+language plpgsql
+immutable
+set search_path = ''
+as $$
+declare
+  path_segments text[];
+begin
+  if object_name is null or segment_index < 1 then
+    return null;
+  end if;
+
+  path_segments := storage.foldername(object_name);
+  return path_segments[segment_index];
+exception
+  when others then
+    return null;
+end;
+$$;
+
+create or replace function public.can_access_event_proof_storage(object_name text)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select exists (
+    select 1
+    from public.events e
+    where e.id = (select public.storage_path_uuid(object_name, 2))
+      and (
+        (select public.is_admin())
+        or (select public.owns_outlet(e.outlet_id))
+        or (select public.is_current_app_user(e.submitter_user_id))
+      )
+  )
+$$;
+
+create or replace function public.can_access_task_proof_storage(object_name text)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select exists (
+    select 1
+    from public.tasks t
+    where t.id = (select public.storage_path_uuid(object_name, 2))
+      and (
+        (select public.is_admin())
+        or (select public.owns_outlet(t.outlet_id))
+        or (select public.is_current_app_user(t.assigned_by_user_id))
+        or (select public.is_current_app_user(t.assigned_to_user_id))
+      )
+  )
+$$;
+
+create or replace function public.can_access_mall_display_proof_storage(object_name text)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select exists (
+    select 1
+    from public.mall_displays md
+    where md.slot_code = (select public.storage_path_segment(object_name, 1))
+      and (
+        (select public.is_admin())
+        or (select public.owns_outlet(md.outlet_id))
+      )
+  )
+$$;
+
 create or replace function public.can_access_campaign(target_campaign_id uuid)
 returns boolean
 language sql
@@ -183,6 +301,272 @@ as $$
     )
 $$;
 
+create or replace function public.can_access_campaign_asset_storage(object_name text)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select (select public.can_access_campaign((select public.storage_path_uuid(object_name, 1))))
+$$;
+
+create or replace function public.can_update_campaign_asset_storage(object_name text)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select (select public.can_update_campaign((select public.storage_path_uuid(object_name, 1))))
+$$;
+
+create or replace function public.import_sales_budget(
+  p_sales_rows jsonb,
+  p_source_file_name text,
+  p_source_batch_id text
+)
+returns table(sales_count integer, budget_count integer)
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor_user_id uuid;
+  import_timestamp timestamp with time zone := now();
+begin
+  if not (select public.is_admin()) then
+    raise exception 'Only admins can import sales and budget data.' using errcode = '42501';
+  end if;
+
+  actor_user_id := (select public.current_app_user_id());
+  if actor_user_id is null then
+    raise exception 'Active app user profile is required for sales import.' using errcode = '42501';
+  end if;
+
+  if p_source_batch_id is null or btrim(p_source_batch_id) = '' then
+    raise exception 'source_batch_id is required.';
+  end if;
+
+  if p_sales_rows is null or jsonb_typeof(p_sales_rows) <> 'array' or jsonb_array_length(p_sales_rows) = 0 then
+    raise exception 'At least one sales row is required.';
+  end if;
+
+  drop table if exists pg_temp.sales_import_rows;
+  create temporary table sales_import_rows (
+    month_key text not null,
+    outlet_id uuid not null,
+    outlet_name text not null,
+    total_sales numeric(14,2) not null,
+    grab_gross_order_value numeric(14,2) not null,
+    grab_commission_fees numeric(14,2) not null,
+    grab_ad_spend numeric(14,2) not null,
+    foodpanda_gross_order_value numeric(14,2) not null,
+    foodpanda_commission_fees numeric(14,2) not null,
+    foodpanda_ad_spend numeric(14,2) not null
+  ) on commit drop;
+
+  insert into pg_temp.sales_import_rows (
+    month_key,
+    outlet_id,
+    outlet_name,
+    total_sales,
+    grab_gross_order_value,
+    grab_commission_fees,
+    grab_ad_spend,
+    foodpanda_gross_order_value,
+    foodpanda_commission_fees,
+    foodpanda_ad_spend
+  )
+  select
+    btrim(row_data.month_key),
+    row_data.outlet_id,
+    btrim(coalesce(row_data.outlet_name, '')),
+    round(coalesce(row_data.total_sales, 0), 2),
+    round(coalesce(row_data.grab_gross_order_value, 0), 2),
+    round(coalesce(row_data.grab_commission_fees, 0), 2),
+    round(coalesce(row_data.grab_ad_spend, 0), 2),
+    round(coalesce(row_data.foodpanda_gross_order_value, 0), 2),
+    round(coalesce(row_data.foodpanda_commission_fees, 0), 2),
+    round(coalesce(row_data.foodpanda_ad_spend, 0), 2)
+  from jsonb_to_recordset(p_sales_rows) as row_data(
+    month_key text,
+    outlet_id uuid,
+    outlet_name text,
+    total_sales numeric,
+    grab_gross_order_value numeric,
+    grab_commission_fees numeric,
+    grab_ad_spend numeric,
+    foodpanda_gross_order_value numeric,
+    foodpanda_commission_fees numeric,
+    foodpanda_ad_spend numeric
+  );
+
+  if exists (
+    select 1
+    from pg_temp.sales_import_rows
+    where month_key !~ '^[0-9]{4}-[0-9]{2}$'
+      or outlet_name = ''
+      or total_sales < 0
+      or grab_gross_order_value < 0
+      or grab_commission_fees < 0
+      or grab_ad_spend < 0
+      or foodpanda_gross_order_value < 0
+      or foodpanda_commission_fees < 0
+      or foodpanda_ad_spend < 0
+  ) then
+    raise exception 'Sales import rows contain invalid month, outlet, or negative financial values.';
+  end if;
+
+  if exists (
+    select 1
+    from pg_temp.sales_import_rows r
+    left join public.outlets o on o.id = r.outlet_id
+    where o.id is null
+  ) then
+    raise exception 'Sales import contains an outlet_id that does not exist.';
+  end if;
+
+  drop table if exists pg_temp.sales_import_collapsed;
+  create temporary table sales_import_collapsed on commit drop as
+  select
+    month_key,
+    outlet_id,
+    max(outlet_name) as outlet_name,
+    round(sum(total_sales), 2) as total_sales,
+    round(sum(grab_gross_order_value), 2) as grab_gross_order_value,
+    round(sum(grab_commission_fees), 2) as grab_commission_fees,
+    round(sum(grab_ad_spend), 2) as grab_ad_spend,
+    round(sum(foodpanda_gross_order_value), 2) as foodpanda_gross_order_value,
+    round(sum(foodpanda_commission_fees), 2) as foodpanda_commission_fees,
+    round(sum(foodpanda_ad_spend), 2) as foodpanda_ad_spend
+  from pg_temp.sales_import_rows
+  group by month_key, outlet_id;
+
+  with upserted_sales as (
+    insert into public.sales (
+      month_key,
+      outlet_id,
+      outlet_name,
+      total_sales,
+      grab_gross_order_value,
+      grab_commission_fees,
+      grab_ad_spend,
+      grab_net_profit,
+      foodpanda_gross_order_value,
+      foodpanda_commission_fees,
+      foodpanda_ad_spend,
+      foodpanda_net_profit,
+      source_file_name,
+      source_batch_id,
+      imported_by_user_id,
+      imported_at,
+      created_at,
+      updated_at
+    )
+    select
+      month_key,
+      outlet_id,
+      outlet_name,
+      total_sales,
+      grab_gross_order_value,
+      grab_commission_fees,
+      grab_ad_spend,
+      round(grab_gross_order_value - grab_commission_fees - grab_ad_spend, 2),
+      foodpanda_gross_order_value,
+      foodpanda_commission_fees,
+      foodpanda_ad_spend,
+      round(foodpanda_gross_order_value - foodpanda_commission_fees - foodpanda_ad_spend, 2),
+      coalesce(p_source_file_name, ''),
+      p_source_batch_id,
+      actor_user_id,
+      import_timestamp,
+      import_timestamp,
+      import_timestamp
+    from pg_temp.sales_import_collapsed
+    on conflict (month_key, outlet_id) do update set
+      outlet_name = excluded.outlet_name,
+      total_sales = excluded.total_sales,
+      grab_gross_order_value = excluded.grab_gross_order_value,
+      grab_commission_fees = excluded.grab_commission_fees,
+      grab_ad_spend = excluded.grab_ad_spend,
+      grab_net_profit = excluded.grab_net_profit,
+      foodpanda_gross_order_value = excluded.foodpanda_gross_order_value,
+      foodpanda_commission_fees = excluded.foodpanda_commission_fees,
+      foodpanda_ad_spend = excluded.foodpanda_ad_spend,
+      foodpanda_net_profit = excluded.foodpanda_net_profit,
+      source_file_name = excluded.source_file_name,
+      source_batch_id = excluded.source_batch_id,
+      imported_by_user_id = excluded.imported_by_user_id,
+      imported_at = excluded.imported_at,
+      updated_at = excluded.updated_at
+    returning 1
+  )
+  select count(*)::integer into sales_count from upserted_sales;
+
+  drop table if exists pg_temp.upserted_budgets;
+  create temporary table upserted_budgets (
+    id uuid primary key,
+    month_key text not null
+  ) on commit drop;
+
+  with monthly_rollups as (
+    select
+      month_key,
+      round(sum(total_sales), 2) as sales_rollup_total
+    from pg_temp.sales_import_collapsed
+    group by month_key
+  ),
+  upserted as (
+    insert into public.budgets (
+      month_key,
+      sales_rollup_total,
+      budget_rate,
+      marketing_budget_total,
+      locked,
+      locked_at,
+      source_file_name,
+      calculated_by_user_id,
+      created_at,
+      updated_at
+    )
+    select
+      month_key,
+      sales_rollup_total,
+      0.0200,
+      round(sales_rollup_total * 0.0200, 2),
+      true,
+      import_timestamp,
+      coalesce(p_source_file_name, ''),
+      actor_user_id,
+      import_timestamp,
+      import_timestamp
+    from monthly_rollups
+    on conflict (month_key) do update set
+      sales_rollup_total = excluded.sales_rollup_total,
+      budget_rate = excluded.budget_rate,
+      marketing_budget_total = excluded.marketing_budget_total,
+      locked = excluded.locked,
+      locked_at = excluded.locked_at,
+      source_file_name = excluded.source_file_name,
+      calculated_by_user_id = excluded.calculated_by_user_id,
+      updated_at = excluded.updated_at
+    returning id, month_key
+  )
+  insert into pg_temp.upserted_budgets (id, month_key)
+  select id, month_key from upserted;
+
+  select count(*)::integer into budget_count from pg_temp.upserted_budgets;
+
+  insert into public.budget_source_batches (budget_id, source_batch_id, created_at)
+  select id, p_source_batch_id, import_timestamp
+  from pg_temp.upserted_budgets
+  on conflict (budget_id, source_batch_id) do nothing;
+
+  return next;
+end;
+$$;
+
 revoke all on function public.current_app_user_id() from public;
 revoke all on function public.current_app_user_outlet_id() from public;
 revoke all on function public.is_active_app_user() from public;
@@ -190,8 +574,17 @@ revoke all on function public.is_admin() from public;
 revoke all on function public.claim_user_profile() from public;
 revoke all on function public.is_current_app_user(uuid) from public;
 revoke all on function public.owns_outlet(uuid) from public;
+revoke all on function public.owns_merchant(text) from public;
+revoke all on function public.storage_path_uuid(text, integer) from public;
+revoke all on function public.storage_path_segment(text, integer) from public;
+revoke all on function public.can_access_event_proof_storage(text) from public;
+revoke all on function public.can_access_task_proof_storage(text) from public;
+revoke all on function public.can_access_campaign_asset_storage(text) from public;
+revoke all on function public.can_update_campaign_asset_storage(text) from public;
+revoke all on function public.can_access_mall_display_proof_storage(text) from public;
 revoke all on function public.can_access_campaign(uuid) from public;
 revoke all on function public.can_update_campaign(uuid) from public;
+revoke all on function public.import_sales_budget(jsonb, text, text) from public;
 
 grant execute on function public.current_app_user_id() to authenticated;
 grant execute on function public.current_app_user_outlet_id() to authenticated;
@@ -200,8 +593,65 @@ grant execute on function public.is_admin() to authenticated;
 grant execute on function public.claim_user_profile() to authenticated;
 grant execute on function public.is_current_app_user(uuid) to authenticated;
 grant execute on function public.owns_outlet(uuid) to authenticated;
+grant execute on function public.owns_merchant(text) to authenticated;
+grant execute on function public.storage_path_uuid(text, integer) to authenticated;
+grant execute on function public.storage_path_segment(text, integer) to authenticated;
+grant execute on function public.can_access_event_proof_storage(text) to authenticated;
+grant execute on function public.can_access_task_proof_storage(text) to authenticated;
+grant execute on function public.can_access_campaign_asset_storage(text) to authenticated;
+grant execute on function public.can_update_campaign_asset_storage(text) to authenticated;
+grant execute on function public.can_access_mall_display_proof_storage(text) to authenticated;
 grant execute on function public.can_access_campaign(uuid) to authenticated;
 grant execute on function public.can_update_campaign(uuid) to authenticated;
+grant execute on function public.import_sales_budget(jsonb, text, text) to authenticated;
+
+-- Supabase Storage buckets
+insert into storage.buckets (id, name, public)
+values
+  ('event-proofs', 'event-proofs', false),
+  ('task-proofs', 'task-proofs', false),
+  ('campaign-assets', 'campaign-assets', false),
+  ('mall-display-proofs', 'mall-display-proofs', false)
+on conflict (id) do update
+set public = false;
+
+drop policy if exists "proof_storage_admin_all" on storage.objects;
+drop policy if exists "event_proofs_select" on storage.objects;
+drop policy if exists "event_proofs_insert" on storage.objects;
+drop policy if exists "task_proofs_select" on storage.objects;
+drop policy if exists "task_proofs_insert" on storage.objects;
+drop policy if exists "campaign_assets_select" on storage.objects;
+drop policy if exists "campaign_assets_insert" on storage.objects;
+drop policy if exists "mall_display_proofs_select" on storage.objects;
+drop policy if exists "mall_display_proofs_insert" on storage.objects;
+create policy "proof_storage_admin_all" on storage.objects
+  for all to authenticated
+  using (bucket_id in ('event-proofs', 'task-proofs', 'campaign-assets', 'mall-display-proofs') and (select public.is_admin()))
+  with check (bucket_id in ('event-proofs', 'task-proofs', 'campaign-assets', 'mall-display-proofs') and (select public.is_admin()));
+create policy "event_proofs_select" on storage.objects
+  for select to authenticated
+  using (bucket_id = 'event-proofs' and (select public.can_access_event_proof_storage(name)));
+create policy "event_proofs_insert" on storage.objects
+  for insert to authenticated
+  with check (bucket_id = 'event-proofs' and (select public.can_access_event_proof_storage(name)));
+create policy "task_proofs_select" on storage.objects
+  for select to authenticated
+  using (bucket_id = 'task-proofs' and (select public.can_access_task_proof_storage(name)));
+create policy "task_proofs_insert" on storage.objects
+  for insert to authenticated
+  with check (bucket_id = 'task-proofs' and (select public.can_access_task_proof_storage(name)));
+create policy "campaign_assets_select" on storage.objects
+  for select to authenticated
+  using (bucket_id = 'campaign-assets' and (select public.can_access_campaign_asset_storage(name)));
+create policy "campaign_assets_insert" on storage.objects
+  for insert to authenticated
+  with check (bucket_id = 'campaign-assets' and (select public.can_update_campaign_asset_storage(name)));
+create policy "mall_display_proofs_select" on storage.objects
+  for select to authenticated
+  using (bucket_id = 'mall-display-proofs' and (select public.can_access_mall_display_proof_storage(name)));
+create policy "mall_display_proofs_insert" on storage.objects
+  for insert to authenticated
+  with check (bucket_id = 'mall-display-proofs' and (select public.can_access_mall_display_proof_storage(name)));
 
 -- public.users
 alter table public.users enable row level security;
@@ -526,6 +976,23 @@ create policy "delivery_promos_pic_update" on public.delivery_promos
   for update to authenticated
   using ((select public.is_current_app_user(pic_user_id)))
   with check ((select public.is_current_app_user(pic_user_id)));
+
+-- public.grab_daily_sales
+alter table public.grab_daily_sales enable row level security;
+drop policy if exists "grab_daily_sales_admin_all" on public.grab_daily_sales;
+drop policy if exists "grab_daily_sales_outlet_select" on public.grab_daily_sales;
+drop policy if exists "grab_daily_sales_outlet_update" on public.grab_daily_sales;
+create policy "grab_daily_sales_admin_all" on public.grab_daily_sales
+  for all to authenticated
+  using ((select public.is_admin()))
+  with check ((select public.is_admin()));
+create policy "grab_daily_sales_outlet_select" on public.grab_daily_sales
+  for select to authenticated
+  using ((select public.owns_merchant(merchant)));
+create policy "grab_daily_sales_outlet_update" on public.grab_daily_sales
+  for update to authenticated
+  using ((select public.owns_merchant(merchant)))
+  with check ((select public.owns_merchant(merchant)));
 
 -- public.social_posts
 alter table public.social_posts enable row level security;
