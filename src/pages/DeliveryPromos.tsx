@@ -284,6 +284,7 @@ export function DeliveryPromos() {
   const [uploading, setUploading] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [feedback, setFeedback] = useState<UploadFeedback>(null);
+  const [selectedMerchant, setSelectedMerchant] = useState('All Outlets');
 
   const loadDailySales = useCallback(async () => {
     setLoading(true);
@@ -314,11 +315,32 @@ export function DeliveryPromos() {
     return () => unsubscribe();
   }, [loadDailySales]);
 
+  const uniqueMerchants = useMemo<string[]>(
+    () => Array.from(new Set<string>(rows
+      .map((row) => row.merchant)
+      .filter((merchant): merchant is string => Boolean(merchant))
+    )).sort((left, right) => left.localeCompare(right)),
+    [rows]
+  );
+
+  useEffect(() => {
+    if (selectedMerchant !== 'All Outlets' && !uniqueMerchants.includes(selectedMerchant)) {
+      setSelectedMerchant('All Outlets');
+    }
+  }, [selectedMerchant, uniqueMerchants]);
+
+  const filteredData = useMemo(
+    () => selectedMerchant === 'All Outlets'
+      ? rows
+      : rows.filter((row) => row.merchant === selectedMerchant),
+    [rows, selectedMerchant]
+  );
+
   const totals = useMemo(() => {
-    const grossSales = rows.reduce((sum, row) => sum + row.grossSales, 0);
-    const netSales = rows.reduce((sum, row) => sum + row.netSales, 0);
-    const transactions = rows.reduce((sum, row) => sum + row.transactions, 0);
-    const ratedRows = rows.filter((row) => row.averageRating > 0);
+    const grossSales = filteredData.reduce((sum, row) => sum + row.grossSales, 0);
+    const netSales = filteredData.reduce((sum, row) => sum + row.netSales, 0);
+    const transactions = filteredData.reduce((sum, row) => sum + row.transactions, 0);
+    const ratedRows = filteredData.filter((row) => row.averageRating > 0);
     const averageRating = ratedRows.length > 0
       ? ratedRows.reduce((sum, row) => sum + row.averageRating, 0) / ratedRows.length
       : 0;
@@ -329,13 +351,13 @@ export function DeliveryPromos() {
       transactions,
       averageRating
     };
-  }, [rows]);
+  }, [filteredData]);
 
-  const dailyTrend = useMemo(() => buildDailyTrend(rows), [rows]);
-  const weekdayHeatmap = useMemo(() => buildWeekdayHeatmap(rows), [rows]);
+  const dailyTrend = useMemo(() => buildDailyTrend(filteredData), [filteredData]);
+  const weekdayHeatmap = useMemo(() => buildWeekdayHeatmap(filteredData), [filteredData]);
   const recentRows = useMemo(
-    () => [...rows].sort((left, right) => right.date.localeCompare(left.date)).slice(0, 8),
-    [rows]
+    () => [...filteredData].sort((left, right) => right.date.localeCompare(left.date)).slice(0, 8),
+    [filteredData]
   );
 
   const handleFiles = async (fileList: FileList | File[]) => {
@@ -432,6 +454,26 @@ export function DeliveryPromos() {
         </div>
       )}
 
+      <section className="flex flex-col gap-3 rounded-2xl border border-neutral-100 bg-white p-5 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <label htmlFor="delivery-outlet-filter" className="text-sm font-bold text-neutral-900">Select Outlet</label>
+          <p className="mt-1 text-sm text-neutral-500">Filter KPIs and charts by merchant from the Grab import.</p>
+        </div>
+        <select
+          id="delivery-outlet-filter"
+          value={selectedMerchant}
+          onChange={(event) => setSelectedMerchant(event.target.value)}
+          className="min-w-64 rounded-xl border border-neutral-200 bg-white px-4 py-2.5 text-sm font-semibold text-neutral-900 outline-none transition-colors focus:border-orange-400 focus:ring-2 focus:ring-orange-100"
+        >
+          <option value="All Outlets">All Outlets</option>
+          {uniqueMerchants.map((merchant) => (
+            <option key={merchant} value={merchant}>
+              {merchant}
+            </option>
+          ))}
+        </select>
+      </section>
+
       <motion.section
         className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-4"
         initial={{ opacity: 0, y: 10 }}
@@ -502,7 +544,7 @@ export function DeliveryPromos() {
             <p className="mt-1 text-sm text-neutral-500">Gross sales and net sales by transaction date.</p>
           </div>
           <span className="rounded-full bg-neutral-100 px-3 py-1 text-xs font-bold text-neutral-600">
-            {loading ? 'Loading...' : `${dailyTrend.length} days`}
+            {loading ? 'Loading...' : `${dailyTrend.length} days · ${selectedMerchant}`}
           </span>
         </div>
 
@@ -581,7 +623,7 @@ export function DeliveryPromos() {
             <p className="mt-1 text-sm text-neutral-500">Latest Grab daily sales records from Supabase.</p>
           </div>
           <span className="rounded-full bg-neutral-100 px-3 py-1 text-xs font-bold text-neutral-600">
-            {rows.length} total rows
+            {filteredData.length} filtered rows
           </span>
         </div>
 
