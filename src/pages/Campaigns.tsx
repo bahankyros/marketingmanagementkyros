@@ -233,6 +233,8 @@ export function Campaigns() {
   const [loadingChecklistTemplates, setLoadingChecklistTemplates] = useState(false);
   const [selectedChecklistTemplateId, setSelectedChecklistTemplateId] = useState('');
 
+  const currentAppUserId = toNullableUuid(userData?.id);
+
   useEffect(() => {
     const assetSource = selectedCampaign?.assetUrl || '';
     if (!assetSource) {
@@ -264,10 +266,17 @@ export function Campaigns() {
   const handleAssetUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !selectedCampaign || !canManageCampaigns) return;
+
+    const campaignId = toNullableUuid(selectedCampaign.id);
+    if (!campaignId) {
+      setFeedback({ tone: 'error', message: 'This campaign is missing a valid ID and cannot accept uploads.' });
+      e.target.value = '';
+      return;
+    }
     
     setIsUploading(true);
     try {
-      const filePath = `${selectedCampaign.id}/${Date.now()}-${file.name}`;
+      const filePath = `${campaignId}/${Date.now()}-${file.name}`;
       const { error: uploadError } = await supabase.storage
         .from('campaign-assets')
         .upload(filePath, file);
@@ -279,19 +288,20 @@ export function Campaigns() {
       const { error } = await supabase
         .from('campaigns')
         .update({ asset_url: filePath, updated_at: nowIso() })
-        .eq('id', selectedCampaign.id);
+        .eq('id', campaignId);
 
       if (error) throw error;
       
       setCampaignAssetUrl(signedUrl);
       setSelectedCampaign({ ...selectedCampaign, assetUrl: filePath });
-      setCampaigns(prev => prev.map(camp => camp.id === selectedCampaign.id ? { ...camp, assetUrl: filePath } : camp));
+      setCampaigns(prev => prev.map(camp => camp.id === campaignId ? { ...camp, assetUrl: filePath } : camp));
       setFeedback({ tone: 'success', message: 'Campaign asset uploaded successfully.' });
     } catch (error) {
       console.error("Error uploading file:", error);
       setFeedback({ tone: 'error', message: 'Failed to upload the campaign asset. Please try again.' });
     } finally {
       setIsUploading(false);
+      e.target.value = '';
     }
   };
 
@@ -308,7 +318,11 @@ export function Campaigns() {
 
   // Fetch all campaigns
   useEffect(() => {
-    if (!user) return;
+    if (!user || !userData) {
+      setCampaigns([]);
+      setLoading(false);
+      return;
+    }
 
     setLoading(true);
     const fetchCampaigns = async () => {
@@ -333,17 +347,21 @@ export function Campaigns() {
     });
 
     return () => unsubscribe();
-  }, [user]);
+  }, [user, userData]);
 
   // Fetch checklist when a campaign is selected
   useEffect(() => {
-    if (view !== 'detail' || !selectedCampaign || !user) return;
+    const campaignId = toNullableUuid(selectedCampaign?.id);
+    if (view !== 'detail' || !campaignId || !user || !userData) {
+      setChecklist([]);
+      return;
+    }
 
     const fetchChecklist = async () => {
       const { data, error } = await supabase
         .from('campaign_checklist_items')
         .select('*')
-        .eq('campaign_id', selectedCampaign.id)
+        .eq('campaign_id', campaignId)
         .order('sort_order', { ascending: true });
 
       if (error) {
@@ -356,12 +374,12 @@ export function Campaigns() {
     };
 
     void fetchChecklist();
-    const unsubscribe = subscribeToTable(`campaign-checklist-${selectedCampaign.id}`, 'campaign_checklist_items', () => {
+    const unsubscribe = subscribeToTable(`campaign-checklist-${campaignId}`, 'campaign_checklist_items', () => {
       void fetchChecklist();
     });
 
     return () => unsubscribe();
-  }, [view, selectedCampaign, user]);
+  }, [view, selectedCampaign, user, userData]);
 
   useEffect(() => {
     if (!user || !canManageCampaigns) {
@@ -436,6 +454,11 @@ export function Campaigns() {
     e.preventDefault();
     if (!user || !userData || !canManageCampaigns) return;
 
+    if (!currentAppUserId) {
+      setFeedback({ tone: 'error', message: 'Your user profile is not ready. Please refresh and try again.' });
+      return;
+    }
+
     const name = formData.name.trim();
     const objective = formData.objective.trim();
     if (!name || !objective) {
@@ -465,7 +488,7 @@ export function Campaigns() {
           objective,
           status: formData.status,
           type: formType === 'digital' ? 'Digital' : 'Promo',
-          owner_user_id: userData.id,
+          owner_user_id: currentAppUserId,
           start_date: toNullableDate(formData.startDate),
           end_date: toNullableDate(formData.endDate),
           budget: normalizedBudget,
@@ -477,13 +500,18 @@ export function Campaigns() {
 
       if (campaignError) throw campaignError;
 
+      const campaignId = toNullableUuid(campaignRow?.id);
+      if (!campaignId) {
+        throw new Error('Campaign was created without a valid ID.');
+      }
+
       const checklistPayload = items.map((taskName, index) => ({
-          campaign_id: campaignRow.id,
-          task: taskName,
-          completed: false,
-          sort_order: index,
-          created_at: timestamp,
-          updated_at: timestamp
+        campaign_id: campaignId,
+        task: taskName,
+        completed: false,
+        sort_order: index,
+        created_at: timestamp,
+        updated_at: timestamp
       }));
 
       const { error: checklistError } = await supabase
@@ -509,7 +537,13 @@ export function Campaigns() {
 
   const handleEditCampaignSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!user || !selectedCampaign || !editingCampaign || !canManageCampaigns) return;
+    if (!user || !userData || !selectedCampaign || !editingCampaign || !canManageCampaigns) return;
+
+    const campaignId = toNullableUuid(selectedCampaign.id);
+    if (!campaignId) {
+      setFeedback({ tone: 'error', message: 'This campaign is missing a valid ID and cannot be updated.' });
+      return;
+    }
 
     const name = editingCampaign.name.trim();
     const objective = editingCampaign.objective.trim();
@@ -524,16 +558,19 @@ export function Campaigns() {
       return;
     }
 
-    const ownerId = typeof selectedCampaign.ownerId === 'string' && selectedCampaign.ownerId.trim()
-      ? selectedCampaign.ownerId
-      : userData?.id || '';
+    const ownerId = toNullableUuid(selectedCampaign.ownerId) || currentAppUserId;
+    if (!ownerId) {
+      setFeedback({ tone: 'error', message: 'This campaign is missing a valid owner profile and cannot be updated.' });
+      return;
+    }
+
     const normalizedType = normalizeCampaignType(selectedCampaign);
     const updatePayload = {
       name,
       objective,
       status: editingCampaign.status,
       type: normalizedType,
-      owner_user_id: toNullableUuid(ownerId),
+      owner_user_id: ownerId,
       updated_at: nowIso(),
       start_date: toNullableDate(editingCampaign.startDate),
       end_date: toNullableDate(editingCampaign.endDate),
@@ -545,7 +582,7 @@ export function Campaigns() {
       const { error } = await supabase
         .from('campaigns')
         .update(updatePayload)
-        .eq('id', selectedCampaign.id);
+        .eq('id', campaignId);
 
       if (error) throw error;
 
@@ -562,7 +599,7 @@ export function Campaigns() {
       };
 
       setSelectedCampaign(nextCampaign);
-      setCampaigns(prev => prev.map(camp => camp.id === selectedCampaign.id ? { ...camp, ...nextCampaign } : camp));
+      setCampaigns(prev => prev.map(camp => camp.id === campaignId ? { ...camp, ...nextCampaign } : camp));
       setEditingCampaign(null);
       setFeedback({ tone: 'success', message: 'Campaign updated successfully.' });
     } catch (error) {
@@ -584,7 +621,7 @@ export function Campaigns() {
       return;
     }
 
-    const campaignId = typeof selectedCampaign?.id === 'string' ? selectedCampaign.id.trim() : '';
+    const campaignId = toNullableUuid(selectedCampaign?.id);
     if (!campaignId) {
       setFeedback({ tone: 'error', message: 'This campaign is missing its document ID and cannot be deleted safely.' });
       return;
@@ -625,11 +662,20 @@ export function Campaigns() {
 
   const toggleChecklistItem = async (itemId: string, currentStatus: boolean) => {
     if (!selectedCampaign || !canManageCampaigns) return;
+
+    const campaignId = toNullableUuid(selectedCampaign.id);
+    const checklistItemId = toNullableUuid(itemId);
+    if (!campaignId || !checklistItemId) {
+      setFeedback({ tone: 'error', message: 'This checklist item cannot be updated because its campaign link is invalid.' });
+      return;
+    }
+
     try {
       const { error } = await supabase
         .from('campaign_checklist_items')
         .update({ completed: !currentStatus, updated_at: nowIso() })
-        .eq('id', itemId);
+        .eq('id', checklistItemId)
+        .eq('campaign_id', campaignId);
 
       if (error) throw error;
     } catch (error) {
