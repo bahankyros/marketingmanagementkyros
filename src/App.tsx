@@ -61,8 +61,22 @@ export default function App() {
             <Route index element={<Dashboard />} />
             <Route path="dashboard" element={<Dashboard />} />
             <Route path="campaigns" element={<Campaigns />} />
-            <Route path="events" element={<Events />} />
-            <Route path="mall-displays" element={<MallDisplays />} />
+            <Route
+              path="events"
+              element={
+                <RoleGuard allowedRoles={['admin', 'supervisor', 'pic']}>
+                  <Events />
+                </RoleGuard>
+              }
+            />
+            <Route
+              path="mall-displays"
+              element={
+                <RoleGuard allowedRoles={['admin', 'supervisor', 'pic']}>
+                  <MallDisplays />
+                </RoleGuard>
+              }
+            />
             <Route
               path="mascots"
               element={
@@ -98,7 +112,14 @@ export default function App() {
             />
             <Route path="ads" element={<PaidAds />} />
             <Route path="delivery" element={<DeliveryPromos />} />
-            <Route path="vouchers" element={<Vouchers />} />
+            <Route
+              path="vouchers"
+              element={
+                <RoleGuard allowedRoles={['admin', 'supervisor', 'pic']}>
+                  <Vouchers />
+                </RoleGuard>
+              }
+            />
             <Route
               path="sales"
               element={
@@ -118,7 +139,7 @@ export default function App() {
             <Route
               path="tasks"
               element={
-                <RoleGuard allowedRoles={['admin', 'supervisor']}>
+                <RoleGuard allowedRoles={['admin', 'supervisor', 'pic']}>
                   <Tasks />
                 </RoleGuard>
               }

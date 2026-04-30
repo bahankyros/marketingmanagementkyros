@@ -12,6 +12,11 @@ type MasterOutlet = {
   name: string;
 };
 
+type FeedbackState = {
+  tone: 'success' | 'error';
+  message: string;
+} | null;
+
 const LEGACY_OUTLET_NAMES = ['Mytown', 'Centrepoint', 'Sogo', 'Empire', 'Setia City Mall', 'Eco Grandeur'];
 const SLOTS_PER_OUTLET = 3;
 
@@ -56,12 +61,17 @@ export function MallDisplays() {
   const [editingSlot, setEditingSlot] = useState<any>(null);
   const [editingSlotProofUrl, setEditingSlotProofUrl] = useState('');
   const [isUploading, setIsUploading] = useState(false);
-  const isAdmin = userData?.role === 'admin';
-  const isSupervisor = userData?.role === 'supervisor';
+  const [feedback, setFeedback] = useState<FeedbackState>(null);
+  const role = userData?.role;
+  const isAdmin = role === 'admin';
+  const isOutletScopedUser = role === 'supervisor' || role === 'pic';
+  const canAccessDisplays = isAdmin || isOutletScopedUser;
 
   const outletGroups = masterOutlets.length > 0
     ? masterOutlets
-    : LEGACY_OUTLET_NAMES.map((name) => ({ id: name, name }));
+    : isAdmin
+      ? LEGACY_OUTLET_NAMES.map((name) => ({ id: name, name }))
+      : [];
 
   useEffect(() => {
     const proofSource = editingSlot?.proofImagePath || editingSlot?.photoProof || editingSlot?.proofImageUrl || '';
@@ -93,7 +103,7 @@ export function MallDisplays() {
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file || !editingSlot || (!isAdmin && !isSupervisor) || (editingSlot.isEmpty && !isAdmin)) return;
+    if (!file || !editingSlot || (!isAdmin && !isOutletScopedUser) || (editingSlot.isEmpty && !isAdmin)) return;
     
     setIsUploading(true);
     try {
@@ -115,9 +125,10 @@ export function MallDisplays() {
       });
     } catch (error) {
       console.error("Error uploading file:", error);
-      alert("Photo upload failed.");
+      setFeedback({ tone: 'error', message: 'Photo upload failed.' });
     } finally {
       setIsUploading(false);
+      e.target.value = '';
     }
   };
   
@@ -129,11 +140,27 @@ export function MallDisplays() {
   const replaceCount = displays.filter(d => d.currentStatus === 'Expired').length;
 
   useEffect(() => {
+    if (!canAccessDisplays) {
+      setMasterOutlets([]);
+      return;
+    }
+
+    if (isOutletScopedUser && !userData?.outlet_id) {
+      setMasterOutlets([]);
+      return;
+    }
+
     const fetchOutlets = async () => {
-      const { data, error } = await supabase
+      let request = supabase
         .from('outlets')
         .select('id, name')
         .order('name', { ascending: true });
+
+      if (isOutletScopedUser) {
+        request = request.eq('id', userData?.outlet_id || '');
+      }
+
+      const { data, error } = await request;
 
       if (error) {
         console.error('Error fetching outlets for displays:', error);
@@ -159,14 +186,33 @@ export function MallDisplays() {
     return () => {
       unsubscribeOutlets();
     };
-  }, []);
+  }, [canAccessDisplays, isOutletScopedUser, userData?.outlet_id]);
 
   useEffect(() => {
+    if (!canAccessDisplays) {
+      setDisplays([]);
+      setLoading(false);
+      return;
+    }
+
+    if (isOutletScopedUser && !userData?.outlet_id) {
+      setDisplays([]);
+      setLoading(false);
+      return;
+    }
+
     const fetchDisplays = async () => {
-      const { data, error } = await supabase
+      setLoading(true);
+      let request = supabase
         .from('mall_displays')
         .select('*')
         .order('slot_code', { ascending: true });
+
+      if (isOutletScopedUser) {
+        request = request.eq('outlet_id', userData?.outlet_id || '');
+      }
+
+      const { data, error } = await request;
 
       if (error) {
         console.error("Error fetching mall displays:", error);
@@ -184,7 +230,7 @@ export function MallDisplays() {
     });
 
     return () => unsubscribeDisplays();
-  }, [masterOutlets]);
+  }, [masterOutlets, canAccessDisplays, isOutletScopedUser, userData?.outlet_id]);
 
   const buildAdminSlotPayload = (slot: any) => {
     const outletId = toNullableUuid(slot.outlet_id);
@@ -219,10 +265,10 @@ export function MallDisplays() {
     if (!editingSlot) return;
 
     const isNewSlot = Boolean(editingSlot.isEmpty);
-    const canSupervisorEdit = isSupervisor && !isNewSlot;
+    const canOutletScopedEdit = isOutletScopedUser && !isNewSlot;
 
-    if (!isAdmin && !canSupervisorEdit) {
-      alert('You do not have permission to save this slot.');
+    if (!isAdmin && !canOutletScopedEdit) {
+      setFeedback({ tone: 'error', message: 'You do not have permission to save this slot.' });
       return;
     }
 
@@ -257,20 +303,24 @@ export function MallDisplays() {
           updated_at: nowIso()
         };
 
-        const request = supabase
+        let request = supabase
           .from('mall_displays')
           .update(supervisorPayload);
-        const { error } = editingSlot.id
-          ? await request.eq('id', editingSlot.id)
-          : await request.eq('slot_code', editingSlot.slotCode);
+        request = editingSlot.id
+          ? request.eq('id', editingSlot.id)
+          : request.eq('slot_code', editingSlot.slotCode);
+        request = request.eq('outlet_id', userData?.outlet_id || '');
+
+        const { error } = await request;
 
         if (error) throw error;
       }
 
       setEditingSlot(null);
+      setFeedback({ tone: 'success', message: 'Display slot saved.' });
     } catch (error) {
       console.error("Error saving slot:", error);
-      alert("Display update failed.");
+      setFeedback({ tone: 'error', message: error instanceof Error ? error.message : 'Display update failed.' });
     }
   };
 
@@ -280,6 +330,22 @@ export function MallDisplays() {
         <h1 className="text-3xl font-bold tracking-tight text-neutral-900">Mall Displays</h1>
         <p className="text-neutral-500 mt-1">Manage display slots across key outlets.</p>
       </header>
+
+      {feedback && (
+        <div className={`rounded-xl border px-4 py-3 text-sm font-medium ${
+          feedback.tone === 'success'
+            ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+            : 'border-rose-200 bg-rose-50 text-rose-700'
+        }`}>
+          {feedback.message}
+        </div>
+      )}
+
+      {isOutletScopedUser && !userData?.outlet_id && (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+          Your profile is missing an assigned outlet. An admin must assign your outlet before you can manage display proofs.
+        </div>
+      )}
 
       <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-8">
         
@@ -354,7 +420,7 @@ export function MallDisplays() {
                         </div>
                         <div className="text-sm">
                           {(() => {
-                            const canOpenSlot = isAdmin || (isSupervisor && !slot.isEmpty);
+                            const canOpenSlot = isAdmin || (isOutletScopedUser && !slot.isEmpty);
                             return (
                           <button
                             onClick={() => setEditingSlot({
@@ -409,8 +475,8 @@ export function MallDisplays() {
                 <div>
                   <h3 className="font-bold text-neutral-900 text-lg">Edit Slot</h3>
                   <p className="text-sm text-neutral-500 font-mono mt-0.5">{editingSlot.slotCode} - {editingSlot.outlet_name || editingSlot.outlet}</p>
-                  {!isAdmin && isSupervisor && !editingSlot.isEmpty && (
-                    <p className="text-xs text-neutral-400 mt-1">Supervisors can update status and proof only.</p>
+                  {!isAdmin && isOutletScopedUser && !editingSlot.isEmpty && (
+                    <p className="text-xs text-neutral-400 mt-1">Outlet teams can update status and proof only.</p>
                   )}
                 </div>
                 <button onClick={() => setEditingSlot(null)} className="p-2 hover:bg-neutral-200 rounded-lg text-neutral-500 transition-colors">
@@ -520,7 +586,7 @@ export function MallDisplays() {
                 <button onClick={() => setEditingSlot(null)} className="px-5 py-2 text-neutral-600 font-medium hover:bg-neutral-200 rounded-lg transition-colors">
                   Cancel
                 </button>
-                 <button type="submit" form="slot-form" disabled={!isAdmin && (editingSlot?.isEmpty || !isSupervisor)} className="px-5 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 disabled:cursor-not-allowed text-white font-medium rounded-lg shadow-sm transition-colors flex items-center gap-2">
+                 <button type="submit" form="slot-form" disabled={!isAdmin && (editingSlot?.isEmpty || !isOutletScopedUser)} className="px-5 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 disabled:cursor-not-allowed text-white font-medium rounded-lg shadow-sm transition-colors flex items-center gap-2">
                    <CheckCircle className="w-4 h-4" /> Save
                  </button>
               </div>

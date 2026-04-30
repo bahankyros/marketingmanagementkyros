@@ -25,6 +25,7 @@ type EventRecord = {
   id: string;
   eventName: string;
   organizer: string;
+  outletId: string;
   outlet: string;
   type: string;
   campaignId: string;
@@ -48,6 +49,7 @@ type EventEditorState = {
   id: string | null;
   eventName: string;
   organizer: string;
+  outletId: string;
   outlet: string;
   type: string;
   campaignId: string;
@@ -76,7 +78,16 @@ type LinkedTaskRecord = {
   dueAt: Date | null;
 };
 
-const OUTLET_OPTIONS = ['Mytown', 'Centrepoint', 'Sogo', 'Empire', 'Setia City Mall', 'Eco Grandeur'];
+type FeedbackState = {
+  tone: 'success' | 'error';
+  message: string;
+} | null;
+
+type OutletOption = {
+  id: string;
+  name: string;
+};
+
 const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 function pad(value: number) {
@@ -136,14 +147,15 @@ function createDefaultEventDate(baseDate?: Date) {
   };
 }
 
-function buildEmptyEditor(baseDate?: Date): EventEditorState {
+function buildEmptyEditor(baseDate?: Date, defaultOutlet?: OutletOption): EventEditorState {
   const dates = createDefaultEventDate(baseDate);
 
   return {
     id: null,
     eventName: '',
     organizer: '',
-    outlet: OUTLET_OPTIONS[0],
+    outletId: defaultOutlet?.id || '',
+    outlet: defaultOutlet?.name || '',
     type: 'Internal',
     campaignId: '',
     decisionStatus: 'Proposed',
@@ -165,6 +177,7 @@ function buildEditorFromEvent(event: EventRecord): EventEditorState {
     id: event.id,
     eventName: event.eventName,
     organizer: event.organizer,
+    outletId: event.outletId,
     outlet: event.outlet,
     type: event.type,
     campaignId: event.campaignId,
@@ -200,6 +213,7 @@ function normalizeEvent(raw: any): EventRecord {
     id: typeof raw.id === 'string' ? raw.id : '',
     eventName: typeof raw.event_name === 'string' ? raw.event_name : '',
     organizer: typeof raw.organizer === 'string' ? raw.organizer : '',
+    outletId: typeof raw.outlet_id === 'string' ? raw.outlet_id : '',
     outlet: typeof raw.outlet_name === 'string' ? raw.outlet_name : '',
     type: typeof raw.type === 'string' ? raw.type : 'Internal',
     campaignId: typeof raw.campaign_id === 'string' ? raw.campaign_id : '',
@@ -256,11 +270,13 @@ export function Events() {
   const { campaigns } = useCampaigns();
   const role = userData?.role;
   const canManageEvents = role === 'admin';
-  const canViewEvents = role === 'admin' || role === 'supervisor' || role === 'finance';
-  const canSeeLinkedTasks = role === 'admin' || role === 'supervisor';
+  const isOutletScopedEventUser = role === 'supervisor' || role === 'pic';
+  const canViewEvents = canManageEvents || isOutletScopedEventUser;
+  const canSeeLinkedTasks = canManageEvents || isOutletScopedEventUser;
 
   const [events, setEvents] = useState<EventRecord[]>([]);
   const [linkedTasks, setLinkedTasks] = useState<LinkedTaskRecord[]>([]);
+  const [outlets, setOutlets] = useState<OutletOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [currentMonth, setCurrentMonth] = useState(() => startOfMonth(new Date()));
   const [selectedDate, setSelectedDate] = useState(() => new Date());
@@ -268,6 +284,7 @@ export function Events() {
   const [eventPhotoUrl, setEventPhotoUrl] = useState('');
   const [isUploading, setIsUploading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [feedback, setFeedback] = useState<FeedbackState>(null);
 
   useEffect(() => {
     const photoSource = editorState?.photos || '';
@@ -299,20 +316,93 @@ export function Events() {
 
   useEffect(() => {
     if (!user || !canViewEvents) {
+      setOutlets([]);
+      return;
+    }
+
+    if (isOutletScopedEventUser && !userData?.outlet_id) {
+      setOutlets([]);
+      return;
+    }
+
+    let isMounted = true;
+    const scopedOutletId = userData?.outlet_id || '';
+
+    const loadOutlets = async () => {
+      let request = supabase
+        .from('outlets')
+        .select('id, name')
+        .order('display_order', { ascending: true })
+        .order('name', { ascending: true });
+
+      if (isOutletScopedEventUser) {
+        request = request.eq('id', scopedOutletId);
+      }
+
+      const { data, error } = await request;
+
+      if (!isMounted) return;
+
+      if (error) {
+        console.error('Error loading event outlets:', error);
+        setOutlets([]);
+        return;
+      }
+
+      const normalizedOutlets = (data || [])
+        .map((outlet) => {
+          const outletName = typeof outlet.name === 'string' ? outlet.name.trim() : '';
+          return outlet.id && outletName ? { id: outlet.id, name: outletName } : null;
+        })
+        .filter((outlet): outlet is OutletOption => outlet !== null);
+
+      setOutlets(normalizedOutlets);
+    };
+
+    void loadOutlets();
+
+    const channel = supabase
+      .channel('core-ops-event-outlets')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'outlets' }, () => {
+        void loadOutlets();
+      })
+      .subscribe();
+
+    return () => {
+      isMounted = false;
+      void supabase.removeChannel(channel);
+    };
+  }, [user, userData?.outlet_id, canViewEvents, isOutletScopedEventUser]);
+
+  useEffect(() => {
+    if (!user || !canViewEvents) {
       setEvents([]);
       setLoading(false);
       return;
     }
 
+    if (isOutletScopedEventUser && !userData?.outlet_id) {
+      setEvents([]);
+      setLoading(false);
+      return;
+    }
+
+    const scopedOutletId = userData?.outlet_id || '';
     let isMounted = true;
 
     const loadEvents = async () => {
       setLoading(true);
 
-      const { data, error } = await supabase
+      let request = supabase
         .from('events')
         .select('*')
         .order('created_at', { ascending: false });
+
+      if (isOutletScopedEventUser) {
+        request = request.eq('outlet_id', scopedOutletId);
+      }
+
+      const { data, error } = await request;
 
       if (!isMounted) return;
 
@@ -343,7 +433,7 @@ export function Events() {
       isMounted = false;
       void supabase.removeChannel(channel);
     };
-  }, [user, canViewEvents]);
+  }, [user, userData?.outlet_id, canViewEvents, isOutletScopedEventUser]);
 
   useEffect(() => {
     if (!user || !canSeeLinkedTasks) {
@@ -351,11 +441,12 @@ export function Events() {
       return;
     }
 
-    if (role !== 'admin' && !userData?.id) {
+    if (isOutletScopedEventUser && !userData?.outlet_id) {
       setLinkedTasks([]);
       return;
     }
 
+    const scopedOutletId = userData?.outlet_id || '';
     let isMounted = true;
 
     const loadLinkedTasks = async () => {
@@ -364,8 +455,8 @@ export function Events() {
         .select('id, title, event_id, outlet_id, assigned_to_user_id, status, due_at, created_at')
         .order('created_at', { ascending: false });
 
-      if (role !== 'admin') {
-        request = request.eq('assigned_to_user_id', userData.id);
+      if (isOutletScopedEventUser) {
+        request = request.eq('outlet_id', scopedOutletId);
       }
 
       const { data, error } = await request;
@@ -394,7 +485,7 @@ export function Events() {
       isMounted = false;
       void supabase.removeChannel(channel);
     };
-  }, [user, userData?.id, role, canSeeLinkedTasks]);
+  }, [user, userData?.outlet_id, isOutletScopedEventUser, canSeeLinkedTasks]);
 
   const calendarDays = useMemo(() => {
     const monthStart = startOfMonth(currentMonth);
@@ -437,10 +528,12 @@ export function Events() {
 
   const openCreateEvent = (baseDate?: Date) => {
     if (!canManageEvents) return;
-    setEditorState(buildEmptyEditor(baseDate));
+    setFeedback(null);
+    setEditorState(buildEmptyEditor(baseDate, outlets[0]));
   };
 
   const openExistingEvent = (event: EventRecord) => {
+    setFeedback(null);
     setEditorState(buildEditorFromEvent(event));
   };
 
@@ -462,7 +555,7 @@ export function Events() {
       setEditorState((current) => current ? { ...current, photos: fullPath } : current);
     } catch (error) {
       console.error('Error uploading file:', error);
-      alert('Photo upload failed.');
+      setFeedback({ tone: 'error', message: 'Photo upload failed.' });
     } finally {
       event.target.value = '';
       setIsUploading(false);
@@ -479,20 +572,27 @@ export function Events() {
     if (
       !editorState.eventName.trim() ||
       !editorState.organizer.trim() ||
-      !editorState.outlet.trim() ||
+      !editorState.outletId ||
       Number.isNaN(startDate.getTime()) ||
       Number.isNaN(endDate.getTime()) ||
       endDate <= startDate
     ) {
-      alert('Name, organizer, outlet, and valid times are required.');
+      setFeedback({ tone: 'error', message: 'Name, organizer, outlet, and valid times are required.' });
+      return;
+    }
+
+    const selectedOutlet = outlets.find((outlet) => outlet.id === editorState.outletId) || null;
+    const outletName = selectedOutlet?.name || editorState.outlet.trim();
+    if (!outletName) {
+      setFeedback({ tone: 'error', message: 'A valid outlet is required.' });
       return;
     }
 
     const payload = {
       event_name: editorState.eventName.trim(),
       organizer: editorState.organizer.trim(),
-      outlet_id: null,
-      outlet_name: editorState.outlet.trim(),
+      outlet_id: editorState.outletId,
+      outlet_name: outletName,
       type: editorState.type.trim() || 'Internal',
       campaign_id: toNullableUuid(editorState.campaignId),
       decision_status: editorState.decisionStatus,
@@ -529,9 +629,10 @@ export function Events() {
       }
 
       setEditorState(null);
+      setFeedback({ tone: 'success', message: 'Event saved.' });
     } catch (error) {
       console.error('Error saving event:', error);
-      alert('Event save failed.');
+      setFeedback({ tone: 'error', message: 'Event save failed.' });
     } finally {
       setSubmitting(false);
     }
@@ -560,6 +661,16 @@ export function Events() {
         )}
       </header>
 
+      {feedback && (
+        <div className={`rounded-xl border px-4 py-3 text-sm font-medium ${
+          feedback.tone === 'success'
+            ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+            : 'border-rose-200 bg-rose-50 text-rose-700'
+        }`}>
+          {feedback.message}
+        </div>
+      )}
+
       <motion.div
         initial={{ opacity: 0, y: 10 }}
         animate={{ opacity: 1, y: 0 }}
@@ -573,7 +684,7 @@ export function Events() {
                 {currentMonth.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}
               </h2>
               <p className="mt-1 text-sm text-neutral-500">
-                Admins can edit. Supervisors and finance can view.
+                Admins can edit. Outlet teams can view.
               </p>
             </div>
             <div className="flex items-center gap-2">
@@ -825,13 +936,21 @@ export function Events() {
                     <div className="space-y-1">
                       <label className="text-sm font-medium text-neutral-700">Outlet</label>
                       <select
-                        value={editorState.outlet}
-                        onChange={e => setEditorState({ ...editorState, outlet: e.target.value })}
+                        value={editorState.outletId}
+                        onChange={e => {
+                          const selectedOutlet = outlets.find((outlet) => outlet.id === e.target.value) || null;
+                          setEditorState({
+                            ...editorState,
+                            outletId: e.target.value,
+                            outlet: selectedOutlet?.name || ''
+                          });
+                        }}
                         disabled={!canManageEvents}
                         className="w-full p-2.5 bg-neutral-50 border border-neutral-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500 disabled:bg-neutral-100 disabled:text-neutral-500"
                       >
-                        {OUTLET_OPTIONS.map((outlet) => (
-                          <option key={outlet} value={outlet}>{outlet}</option>
+                        <option value="">Select outlet</option>
+                        {outlets.map((outlet) => (
+                          <option key={outlet.id} value={outlet.id}>{outlet.name}</option>
                         ))}
                       </select>
                     </div>
@@ -881,7 +1000,7 @@ export function Events() {
                       >
                         <option value="">None / standalone</option>
                         {campaigns.map((campaign) => (
-                          <option key={campaign.id} value={campaign.name}>{campaign.name}</option>
+                          <option key={campaign.id} value={campaign.id}>{campaign.name}</option>
                         ))}
                       </select>
                     </div>

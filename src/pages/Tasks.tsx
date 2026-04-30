@@ -37,10 +37,11 @@ type TaskRecord = {
   updatedAt: Date | null;
 };
 
-type SupervisorOption = {
+type OutletAssigneeOption = {
   uid: string;
   displayName: string;
   email: string;
+  role: 'supervisor' | 'pic';
   outletId: string;
   outletName: string;
 };
@@ -48,6 +49,7 @@ type SupervisorOption = {
 type EventOption = {
   id: string;
   eventName: string;
+  outletId: string;
   outlet: string;
   startAt: Date | null;
   endAt: Date | null;
@@ -114,10 +116,16 @@ function nowIso() {
 }
 
 function eventMatchesOutlet(event: EventOption, outletId: string, outletName: string) {
+  const normalizedEventOutletId = event.outletId.trim().toLowerCase();
+  const normalizedOutletId = outletId.trim().toLowerCase();
+  if (normalizedEventOutletId && normalizedOutletId) {
+    return normalizedEventOutletId === normalizedOutletId;
+  }
+
   const normalizedEventOutlet = event.outlet.trim().toLowerCase();
   if (!normalizedEventOutlet) return false;
 
-  return [outletId, outletName]
+  return [outletName]
     .map((value) => value.trim().toLowerCase())
     .filter(Boolean)
     .some((value) => value === normalizedEventOutlet);
@@ -202,6 +210,7 @@ function normalizeEventOption(row: any): EventOption {
   return {
     id: typeof row.id === 'string' ? row.id : '',
     eventName: typeof row.event_name === 'string' ? row.event_name : '',
+    outletId: typeof row.outlet_id === 'string' ? row.outlet_id : '',
     outlet: typeof row.outlet_name === 'string' ? row.outlet_name : '',
     startAt: parseEventDate(row.start_at) || parseEventDate(row.proposed_date),
     endAt: parseEventDate(row.end_at)
@@ -212,16 +221,17 @@ export function Tasks() {
   const { user, userData } = useAuth();
   const role = userData?.role;
   const isAdmin = role === 'admin';
-  const isSupervisor = role === 'supervisor';
+  const isOutletScopedUser = role === 'supervisor' || role === 'pic';
+  const canAccessTasks = isAdmin || isOutletScopedUser;
 
   const [tasks, setTasks] = useState<TaskRecord[]>([]);
-  const [supervisors, setSupervisors] = useState<SupervisorOption[]>([]);
+  const [assignees, setAssignees] = useState<OutletAssigneeOption[]>([]);
   const [events, setEvents] = useState<EventOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [selectedTask, setSelectedTask] = useState<TaskRecord | null>(null);
   const [createForm, setCreateForm] = useState<TaskCreateFormState>(buildDefaultCreateForm());
-  const [supervisorStatus, setSupervisorStatus] = useState<'in_progress' | 'proof_submitted'>('in_progress');
+  const [outletUserStatus, setOutletUserStatus] = useState<'in_progress' | 'proof_submitted'>('in_progress');
   const [proofTextDraft, setProofTextDraft] = useState('');
   const [adminReviewStatus, setAdminReviewStatus] = useState<'approved' | 'rejected' | 'completed'>('approved');
   const [proofUpload, setProofUpload] = useState<UploadState>(buildUploadState());
@@ -258,9 +268,16 @@ export function Tasks() {
   }, [selectedTask?.proofImagePath, selectedTask?.proofImageUrl]);
 
   useEffect(() => {
-    if (!user || !userData) {
+    if (!user || !userData || !canAccessTasks) {
       setTasks([]);
       setLoading(false);
+      return;
+    }
+
+    if (isOutletScopedUser && !userData.outlet_id) {
+      setTasks([]);
+      setLoading(false);
+      setFeedback({ tone: 'error', message: 'Your profile is missing an assigned outlet. An admin must assign your outlet before tasks can load.' });
       return;
     }
 
@@ -280,8 +297,8 @@ export function Tasks() {
         .select('*')
         .order('created_at', { ascending: false });
 
-      if (!isAdmin) {
-        request = request.eq('assigned_to_user_id', userData.id);
+      if (isOutletScopedUser) {
+        request = request.eq('outlet_id', userData.outlet_id);
       }
 
       const { data, error } = await request;
@@ -316,10 +333,15 @@ export function Tasks() {
       isMounted = false;
       void supabase.removeChannel(channel);
     };
-  }, [user, userData, isAdmin]);
+  }, [user, userData, isAdmin, isOutletScopedUser, canAccessTasks]);
 
   useEffect(() => {
-    if (!user || !userData) {
+    if (!user || !userData || !canAccessTasks) {
+      setEvents([]);
+      return;
+    }
+
+    if (isOutletScopedUser && !userData.outlet_id) {
       setEvents([]);
       return;
     }
@@ -327,10 +349,16 @@ export function Tasks() {
     let isMounted = true;
 
     const loadEvents = async () => {
-      const { data, error } = await supabase
+      let request = supabase
         .from('events')
-        .select('id, event_name, outlet_name, start_at, end_at, proposed_date')
+        .select('id, event_name, outlet_id, outlet_name, start_at, end_at, proposed_date')
         .order('created_at', { ascending: false });
+
+      if (isOutletScopedUser) {
+        request = request.eq('outlet_id', userData.outlet_id);
+      }
+
+      const { data, error } = await request;
 
       if (!isMounted) return;
 
@@ -365,29 +393,29 @@ export function Tasks() {
       isMounted = false;
       void supabase.removeChannel(channel);
     };
-  }, [user, userData]);
+  }, [user, userData, isOutletScopedUser, canAccessTasks]);
 
   useEffect(() => {
     if (!user || !isAdmin) {
-      setSupervisors([]);
+      setAssignees([]);
       return;
     }
 
     let isMounted = true;
 
-    const loadSupervisors = async () => {
+    const loadAssignees = async () => {
       const { data, error } = await supabase
         .from('users')
         .select('id, email, display_name, role, outlet_id, outlet_name, status')
-        .eq('role', 'supervisor')
+        .in('role', ['supervisor', 'pic'])
         .eq('status', 'active')
         .order('display_name', { ascending: true });
 
       if (!isMounted) return;
 
       if (error) {
-        console.error('Error loading supervisors:', error);
-        setFeedback({ tone: 'error', message: 'Failed to load supervisors.' });
+        console.error('Error loading task assignees:', error);
+        setFeedback({ tone: 'error', message: 'Failed to load outlet task assignees.' });
         return;
       }
 
@@ -407,22 +435,23 @@ export function Tasks() {
             uid: profile.id,
             displayName,
             email: typeof profile.email === 'string' ? profile.email.trim() : '',
+            role: profile.role === 'pic' ? 'pic' : 'supervisor',
             outletId,
             outletName: outletName || outletId
           };
         })
-        .filter((supervisor): supervisor is SupervisorOption => supervisor !== null)
+        .filter((assignee): assignee is OutletAssigneeOption => assignee !== null)
         .sort((left, right) => left.displayName.localeCompare(right.displayName));
 
-      setSupervisors(normalized);
+      setAssignees(normalized);
     };
 
-    void loadSupervisors();
+    void loadAssignees();
 
     const channel = supabase
-      .channel('core-ops-task-supervisors')
+      .channel('core-ops-task-assignees')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, () => {
-        void loadSupervisors();
+        void loadAssignees();
       })
       .subscribe();
 
@@ -432,9 +461,9 @@ export function Tasks() {
     };
   }, [user, isAdmin]);
 
-  const supervisorMap = useMemo(
-    () => new Map(supervisors.map((supervisor) => [supervisor.uid, supervisor])),
-    [supervisors]
+  const assigneeMap = useMemo(
+    () => new Map(assignees.map((assignee) => [assignee.uid, assignee])),
+    [assignees]
   );
 
   const eventsMap = useMemo(
@@ -448,21 +477,62 @@ export function Tasks() {
   );
 
   const outletLabelForTask = (task: TaskRecord) => {
-    if (isSupervisor && userData?.outlet_id === task.outlet_id) {
+    if (isOutletScopedUser && userData?.outlet_id === task.outlet_id) {
       return userData.outlet_name || task.outlet_id;
     }
 
-    return supervisorMap.get(task.assignedToUid)?.outletName || task.outlet_id;
+    return assigneeMap.get(task.assignedToUid)?.outletName || task.outlet_id;
   };
 
   const assigneeLabelForTask = (task: TaskRecord) => {
-    const supervisor = supervisorMap.get(task.assignedToUid);
-    return supervisor ? supervisor.displayName : task.assignedToUid;
+    if (task.assignedToUid === userData?.id) {
+      return userData.display_name || userData.email || task.assignedToUid;
+    }
+
+    const assignee = assigneeMap.get(task.assignedToUid);
+    return assignee ? assignee.displayName : task.assignedToUid;
+  };
+
+  const canManageTaskProgress = (task: TaskRecord | null) => Boolean(
+    task
+    && isOutletScopedUser
+    && userData?.id
+    && userData?.outlet_id
+    && task.assignedToUid === userData.id
+    && task.outlet_id === userData.outlet_id
+  );
+
+  const canManageSelectedTaskProgress = canManageTaskProgress(selectedTask);
+
+  const assigneeRoleLabel = (assignee: OutletAssigneeOption) => (
+    assignee.role === 'pic' ? 'PIC' : 'Supervisor'
+  );
+
+  const assigneeLabel = (assignee: OutletAssigneeOption) => (
+    `${assignee.displayName} (${assignee.outletName}, ${assigneeRoleLabel(assignee)})`
+  );
+
+  const assigneeRequiredMessage = 'Title, assignee, outlet, and due date are required.';
+
+  const noTaskCopy = isAdmin
+    ? 'Assign the first outlet task to start the workflow.'
+    : 'Outlet tasks will appear here once an admin creates them.';
+
+  const reviewHelpCopy = 'Review is separate from proof upload. Outlet teams upload first, then submit.';
+
+  const isCreateSubmitDisabled = submitting || assignees.length === 0;
+
+  const outletScopedNoOutlet = isOutletScopedUser && !userData?.outlet_id;
+
+  const openCreatePanel = () => {
+    setCreateForm(buildDefaultCreateForm());
+    setFeedback(null);
+    setIsCreateOpen(true);
   };
 
   const openTaskPanel = (task: TaskRecord) => {
     setSelectedTask(task);
-    setSupervisorStatus(task.status === 'proof_submitted' ? 'proof_submitted' : 'in_progress');
+    setOutletUserStatus(task.status === 'proof_submitted' ? 'proof_submitted' : 'in_progress');
     setProofTextDraft(task.proofText);
     setAdminReviewStatus(task.status === 'rejected' ? 'rejected' : task.status === 'completed' ? 'completed' : 'approved');
     setProofUpload(buildUploadState(task.proofImageUrl, task.proofImagePath));
@@ -470,12 +540,12 @@ export function Tasks() {
   };
 
   const handleCreateAssigneeChange = (nextUid: string) => {
-    const supervisor = supervisorMap.get(nextUid);
+    const assignee = assigneeMap.get(nextUid);
     setCreateForm((current) => ({
       ...current,
       assignedToUid: nextUid,
-      outletId: supervisor?.outletId || '',
-      outletName: supervisor?.outletName || '',
+      outletId: assignee?.outletId || '',
+      outletName: assignee?.outletName || '',
       eventId: ''
     }));
   };
@@ -487,7 +557,7 @@ export function Tasks() {
     const dueDate = new Date(createForm.dueAt);
     const linkedEvent = createForm.eventId ? eventsMap.get(createForm.eventId) || null : null;
     if (!createForm.title.trim() || !createForm.assignedToUid || !createForm.outletId || Number.isNaN(dueDate.getTime())) {
-      setFeedback({ tone: 'error', message: 'Title, supervisor, outlet, and due date are required.' });
+      setFeedback({ tone: 'error', message: assigneeRequiredMessage });
       return;
     }
 
@@ -534,6 +604,12 @@ export function Tasks() {
     const file = event.target.files?.[0];
     if (!file || !selectedTask) return;
 
+    if (!canManageTaskProgress(selectedTask)) {
+      setProofUpload({ status: 'error', url: '', path: '', error: 'You can only upload proof for tasks assigned to you at your outlet.' });
+      event.target.value = '';
+      return;
+    }
+
     setProofUpload((current) => ({ ...current, status: 'uploading', error: null }));
     try {
       const fullPath = `tasks/${selectedTask.id}/${Date.now()}-${file.name}`;
@@ -553,9 +629,15 @@ export function Tasks() {
     }
   };
 
-  const handleSupervisorSave = async () => {
+  const handleOutletUserSave = async () => {
     if (!selectedTask) return;
-    if (supervisorStatus === 'proof_submitted' && !proofTextDraft.trim()) {
+
+    if (!canManageTaskProgress(selectedTask)) {
+      setFeedback({ tone: 'error', message: 'You can only update tasks assigned to you at your outlet.' });
+      return;
+    }
+
+    if (outletUserStatus === 'proof_submitted' && !proofTextDraft.trim()) {
       setFeedback({ tone: 'error', message: 'Add proof details before submitting.' });
       return;
     }
@@ -567,20 +649,22 @@ export function Tasks() {
       const { error } = await supabase
         .from('tasks')
         .update({
-          status: supervisorStatus,
+          status: outletUserStatus,
           proof_text: proofTextDraft.trim(),
           proof_image_url: '',
           proof_image_path: proofUpload.path || selectedTask.proofImagePath || '',
           updated_at: nowIso()
         })
-        .eq('id', selectedTask.id);
+        .eq('id', selectedTask.id)
+        .eq('outlet_id', userData?.outlet_id || '')
+        .eq('assigned_to_user_id', userData?.id || '');
 
       if (error) throw error;
 
       setSelectedTask(null);
       setFeedback({
         tone: 'success',
-        message: supervisorStatus === 'proof_submitted'
+        message: outletUserStatus === 'proof_submitted'
           ? 'Proof sent for review.'
           : 'Task marked in progress.'
       });
@@ -630,11 +714,7 @@ export function Tasks() {
         {isAdmin && (
           <button
             type="button"
-            onClick={() => {
-              setCreateForm(buildDefaultCreateForm());
-              setFeedback(null);
-              setIsCreateOpen(true);
-            }}
+            onClick={openCreatePanel}
             className="inline-flex items-center gap-2 rounded-lg bg-neutral-900 px-4 py-2 font-medium text-white shadow-sm transition-colors hover:bg-neutral-800"
           >
             <Plus size={18} />
@@ -650,6 +730,12 @@ export function Tasks() {
             : 'border-rose-200 bg-rose-50 text-rose-700'
         }`}>
           {feedback.message}
+        </div>
+      )}
+
+      {outletScopedNoOutlet && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800">
+          Your profile is missing an assigned outlet. An admin must assign your outlet before tasks can load.
         </div>
       )}
 
@@ -715,9 +801,7 @@ export function Tasks() {
             <ClipboardList className="mx-auto mb-4 h-10 w-10 text-neutral-300" />
             <p className="text-lg font-medium text-neutral-900">No tasks found</p>
             <p className="mt-2 text-sm text-neutral-500">
-              {isAdmin
-                ? 'Assign the first supervisor task to start the workflow.'
-                : 'Assigned tasks will appear here once an admin creates them.'}
+              {noTaskCopy}
             </p>
           </div>
         ) : (
@@ -847,16 +931,16 @@ export function Tasks() {
                   </div>
 
                   <div className="space-y-1">
-                    <label className="text-sm font-medium text-neutral-700">Supervisor</label>
+                    <label className="text-sm font-medium text-neutral-700">Assignee</label>
                     <select
                       value={createForm.assignedToUid}
                       onChange={(event) => handleCreateAssigneeChange(event.target.value)}
                       className="w-full rounded-lg border border-neutral-200 bg-neutral-50 p-2 outline-none focus:ring-2 focus:ring-neutral-900"
                     >
-                      <option value="">Select supervisor</option>
-                      {supervisors.map((supervisor) => (
-                        <option key={supervisor.uid} value={supervisor.uid}>
-                          {supervisor.displayName} ({supervisor.outletName})
+                      <option value="">Select outlet assignee</option>
+                      {assignees.map((assignee) => (
+                        <option key={assignee.uid} value={assignee.uid}>
+                          {assigneeLabel(assignee)}
                         </option>
                       ))}
                     </select>
@@ -865,7 +949,7 @@ export function Tasks() {
                   <div className="space-y-1">
                     <label className="text-sm font-medium text-neutral-700">Outlet</label>
                     <div className="rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm font-medium text-neutral-700">
-                      {createForm.outletName || 'Select a supervisor first'}
+                      {createForm.outletName || 'Select an assignee first'}
                     </div>
                   </div>
 
@@ -902,7 +986,7 @@ export function Tasks() {
                 <button
                   type="submit"
                   form="task-create-form"
-                  disabled={submitting}
+                  disabled={isCreateSubmitDisabled}
                   className="rounded-lg bg-neutral-900 px-5 py-2 font-medium text-white shadow-sm transition-colors hover:bg-neutral-800 disabled:cursor-not-allowed disabled:bg-neutral-400"
                 >
                   {submitting ? 'Assigning...' : 'Assign Task'}
@@ -1003,13 +1087,13 @@ export function Tasks() {
                   )}
                 </div>
 
-                {isSupervisor && selectedTask.assignedToUid === userData?.id && (
+                {canManageSelectedTaskProgress && (
                   <div className="space-y-5 rounded-2xl border border-neutral-100 p-4">
                     <div className="space-y-1">
                       <label className="text-sm font-medium text-neutral-700">Progress Status</label>
                       <select
-                        value={supervisorStatus}
-                        onChange={(event) => setSupervisorStatus(event.target.value as 'in_progress' | 'proof_submitted')}
+                        value={outletUserStatus}
+                        onChange={(event) => setOutletUserStatus(event.target.value as 'in_progress' | 'proof_submitted')}
                         className="w-full rounded-lg border border-neutral-200 bg-neutral-50 p-2 outline-none focus:ring-2 focus:ring-indigo-500"
                       >
                         <option value="in_progress">In Progress</option>
@@ -1042,7 +1126,7 @@ export function Tasks() {
                             type="file"
                             accept="image/*"
                             onChange={handleProofUpload}
-                            disabled={proofUpload.status === 'uploading'}
+                            disabled={proofUpload.status === 'uploading' || !canManageSelectedTaskProgress}
                             className="hidden"
                           />
                         </label>
@@ -1098,7 +1182,7 @@ export function Tasks() {
                       </select>
                     </div>
                     <p className="text-sm text-neutral-500">
-                      Review is separate from proof upload. Supervisors upload first, then submit.
+                      {reviewHelpCopy}
                     </p>
                   </div>
                 )}
@@ -1112,15 +1196,15 @@ export function Tasks() {
                 >
                   Close
                 </button>
-                {isSupervisor && selectedTask.assignedToUid === userData?.id && (
+                {canManageSelectedTaskProgress && (
                   <button
                     type="button"
-                    onClick={handleSupervisorSave}
-                    disabled={submitting || proofUpload.status === 'uploading'}
+                    onClick={handleOutletUserSave}
+                    disabled={submitting || proofUpload.status === 'uploading' || !canManageSelectedTaskProgress}
                     className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-5 py-2 font-medium text-white shadow-sm transition-colors hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-indigo-300"
                   >
                     <CheckCircle2 className="h-4 w-4" />
-                    {submitting ? 'Saving...' : supervisorStatus === 'proof_submitted' ? 'Submit Proof' : 'Save Progress'}
+                    {submitting ? 'Saving...' : outletUserStatus === 'proof_submitted' ? 'Submit Proof' : 'Save Progress'}
                   </button>
                 )}
                 {isAdmin && (

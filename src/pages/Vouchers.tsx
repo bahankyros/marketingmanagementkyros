@@ -88,8 +88,8 @@ export function Vouchers() {
   const { user, userData } = useAuth();
   const role = userData?.role;
   const isAdmin = role === 'admin';
-  const isSupervisor = role === 'supervisor';
-  const canManageVouchers = isAdmin || isSupervisor;
+  const isOutletScopedUser = role === 'supervisor' || role === 'pic';
+  const canManageVouchers = isAdmin || isOutletScopedUser;
 
   const [vouchers, setVouchers] = useState<VoucherRecord[]>([]);
   const [masterOutlets, setMasterOutlets] = useState<MasterOutlet[]>([]);
@@ -153,7 +153,7 @@ export function Vouchers() {
       return;
     }
 
-    if (isSupervisor && !userData.outlet_id) {
+    if (isOutletScopedUser && !userData.outlet_id) {
       setVouchers([]);
       setLoading(false);
       return;
@@ -169,7 +169,7 @@ export function Vouchers() {
         .select('*')
         .order('used_at', { ascending: false });
 
-      if (isSupervisor) {
+      if (isOutletScopedUser) {
         request = request.eq('outlet_id', userData.outlet_id);
       }
 
@@ -209,10 +209,10 @@ export function Vouchers() {
       isMounted = false;
       void supabase.removeChannel(channel);
     };
-  }, [user, userData, isSupervisor]);
+  }, [user, userData, isOutletScopedUser]);
 
   const outletLabelFor = (outletId: string) => {
-    if (isSupervisor && userData?.outlet_id === outletId) {
+    if (isOutletScopedUser && userData?.outlet_id === outletId) {
       return userData.outlet_name || outletId;
     }
 
@@ -222,7 +222,7 @@ export function Vouchers() {
 
   const openCreateEditor = () => {
     setEditingVoucher(null);
-    setFormState(buildDefaultForm(isSupervisor ? userData?.outlet_id || '' : ''));
+    setFormState(buildDefaultForm(isOutletScopedUser ? userData?.outlet_id || '' : ''));
     setFeedback(null);
     setIsEditorOpen(true);
   };
@@ -242,16 +242,14 @@ export function Vouchers() {
 
   const canEditVoucher = (voucher: VoucherRecord) => {
     if (isAdmin) return true;
-    return isSupervisor &&
-      voucher.loggedByUid === userData?.id &&
-      voucher.outlet_id === userData?.outlet_id;
+    return isOutletScopedUser && voucher.outlet_id === userData?.outlet_id;
   };
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!user || !userData || !canManageVouchers) return;
 
-    const outletId = isSupervisor ? userData.outlet_id : formState.outlet_id;
+    const outletId = isOutletScopedUser ? userData.outlet_id : formState.outlet_id;
     const usedAtDate = new Date(formState.usedAt);
     const amount = Number(formState.amount);
 
@@ -302,7 +300,7 @@ export function Vouchers() {
 
       setIsEditorOpen(false);
       setEditingVoucher(null);
-      setFormState(buildDefaultForm(isSupervisor ? userData.outlet_id : ''));
+      setFormState(buildDefaultForm(isOutletScopedUser ? userData.outlet_id : ''));
       setFeedback({
         tone: 'success',
         message: editingVoucher ? 'Voucher updated.' : 'Voucher saved.'
@@ -344,9 +342,9 @@ export function Vouchers() {
         </div>
       )}
 
-      {isSupervisor && !userData?.outlet_id && (
+      {isOutletScopedUser && !userData?.outlet_id && (
         <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
-          Your supervisor profile is missing an assigned outlet. An admin must assign your outlet before you can log vouchers.
+          Your profile is missing an assigned outlet. An admin must assign your outlet before you can log vouchers.
         </div>
       )}
 
@@ -391,12 +389,12 @@ export function Vouchers() {
             <div>
               <p className="text-sm font-semibold uppercase tracking-wider text-neutral-500">Outlet</p>
               <p className="text-lg font-bold text-neutral-900">
-                {isSupervisor ? (userData?.outlet_name || userData?.outlet_id || 'Unassigned') : 'Multi-outlet'}
+                {isOutletScopedUser ? (userData?.outlet_name || userData?.outlet_id || 'Unassigned') : 'Multi-outlet'}
               </p>
             </div>
           </div>
           <p className="text-sm text-neutral-500">
-            Supervisors stay on their outlet. Admins can log any outlet. Finance is view only.
+            Outlet teams stay on their outlet. Admins can log any outlet.
           </p>
         </div>
       </motion.div>
@@ -483,7 +481,7 @@ export function Vouchers() {
                     {editingVoucher ? 'Edit Voucher' : 'Log Voucher'}
                   </h3>
                   <p className="mt-0.5 text-sm text-neutral-500">
-                    {isSupervisor ? (userData?.outlet_name || userData?.outlet_id || 'Assigned outlet required') : 'Admin voucher entry'}
+                    {isOutletScopedUser ? (userData?.outlet_name || userData?.outlet_id || 'Assigned outlet required') : 'Admin voucher entry'}
                   </p>
                 </div>
                 <button
@@ -584,7 +582,7 @@ export function Vouchers() {
                 <button
                   type="submit"
                   form="voucher-form"
-                  disabled={submitting || (isSupervisor && !userData?.outlet_id)}
+                  disabled={submitting || (isOutletScopedUser && !userData?.outlet_id)}
                   className="rounded-lg bg-amber-500 px-5 py-2 font-medium text-white shadow-sm transition-colors hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-amber-300"
                 >
                   {submitting ? 'Saving...' : editingVoucher ? 'Save Changes' : 'Save Voucher'}
