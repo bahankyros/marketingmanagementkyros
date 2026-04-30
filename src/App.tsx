@@ -85,11 +85,18 @@ export default function App() {
                 </RoleGuard>
               }
             />
-            <Route path="social" element={<SocialMedia />} />
+            <Route
+              path="social"
+              element={
+                <RoleGuard allowedRoles={['admin', 'supervisor', 'finance', 'pic']}>
+                  <SocialMedia />
+                </RoleGuard>
+              }
+            />
             <Route
               path="blog"
               element={
-                <RoleGuard allowedRoles={['admin']}>
+                <RoleGuard allowedRoles={['admin', 'finance']}>
                   <BlogOutreach />
                 </RoleGuard>
               }
@@ -97,7 +104,7 @@ export default function App() {
             <Route
               path="blog-outreach"
               element={
-                <RoleGuard allowedRoles={['admin']}>
+                <RoleGuard allowedRoles={['admin', 'finance']}>
                   <BlogOutreach />
                 </RoleGuard>
               }
@@ -110,8 +117,22 @@ export default function App() {
                 </RoleGuard>
               }
             />
-            <Route path="ads" element={<PaidAds />} />
-            <Route path="delivery" element={<DeliveryPromos />} />
+            <Route
+              path="ads"
+              element={
+                <RoleGuard allowedRoles={['admin', 'finance']}>
+                  <PaidAds />
+                </RoleGuard>
+              }
+            />
+            <Route
+              path="delivery"
+              element={
+                <RoleGuard allowedRoles={['admin', 'supervisor', 'pic']}>
+                  <DeliveryPromos />
+                </RoleGuard>
+              }
+            />
             <Route
               path="vouchers"
               element={
@@ -155,7 +176,7 @@ export default function App() {
             <Route
               path="reports"
               element={
-                <RoleGuard allowedRoles={['admin']}>
+                <RoleGuard allowedRoles={['admin', 'finance']}>
                   <Reports />
                 </RoleGuard>
               }

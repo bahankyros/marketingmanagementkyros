@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Calendar, Download, DollarSign, Save, Upload } from 'lucide-react';
 import { useAuth } from '../lib/AuthContext';
 import { supabase } from '../lib/supabase';
-import { nowIso, subscribeToTable } from '../lib/supabaseData';
+import { subscribeToTable, toNullableUuid } from '../lib/supabaseData';
 
 const SALES_IMPORT_HEADERS = [
   'month_key',
@@ -339,6 +339,15 @@ export function Sales() {
   const handleCommitSalesImport = async () => {
     if (!user || !userData || !canManageSales || !salesImportPreview || parsedSalesImportRows.length === 0) return;
 
+    const currentAppUserId = toNullableUuid(userData.id);
+    if (!currentAppUserId) {
+      setSalesImportFeedback({
+        tone: 'error',
+        message: 'Active admin profile is required before importing sales.'
+      });
+      return;
+    }
+
     setIsImportingSales(true);
     setSalesImportFeedback(null);
 
@@ -372,7 +381,6 @@ export function Sales() {
         monthlyRollupMap.set(row.month_key, roundCurrency(currentMonthSales + row.total_sales));
       });
 
-      const timestamp = nowIso();
       const salesPayload = Array.from(salesDocMap.values()).map((salesRow) => ({
           month_key: salesRow.month_key,
           outlet_id: salesRow.outlet_id,
@@ -381,21 +389,9 @@ export function Sales() {
           grab_gross_order_value: salesRow.grab_gross_order_value,
           grab_commission_fees: salesRow.grab_commission_fees,
           grab_ad_spend: salesRow.grab_ad_spend,
-          grab_net_profit: roundCurrency(
-            salesRow.grab_gross_order_value - salesRow.grab_commission_fees - salesRow.grab_ad_spend
-          ),
           foodpanda_gross_order_value: salesRow.foodpanda_gross_order_value,
           foodpanda_commission_fees: salesRow.foodpanda_commission_fees,
-          foodpanda_ad_spend: salesRow.foodpanda_ad_spend,
-          foodpanda_net_profit: roundCurrency(
-            salesRow.foodpanda_gross_order_value - salesRow.foodpanda_commission_fees - salesRow.foodpanda_ad_spend
-          ),
-          source_file_name: salesImportPreview.fileName,
-          source_batch_id: csvBatchId,
-          imported_by_user_id: userData.id,
-          imported_at: timestamp,
-          created_at: timestamp,
-          updated_at: timestamp
+          foodpanda_ad_spend: salesRow.foodpanda_ad_spend
       }));
 
       const { data: importResult, error: importError } = await supabase.rpc('import_sales_budget', {

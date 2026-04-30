@@ -32,14 +32,21 @@ function normalizePartnership(row: any) {
   };
 }
 
+type PartnershipFeedback = {
+  tone: 'success' | 'error';
+  message: string;
+};
+
 export function Partnerships() {
   const { user, userData } = useAuth();
   const { campaigns } = useCampaigns();
   const role = userData?.role;
   const canManagePartnerships = role === 'admin';
+  const currentAppUserId = toNullableUuid(userData?.id);
   
   const [partnerships, setPartnerships] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [feedback, setFeedback] = useState<PartnershipFeedback | null>(null);
   
   const [isCreating, setIsCreating] = useState(false);
   const [editingPartnership, setEditingPartnership] = useState<any>(null);
@@ -61,15 +68,23 @@ export function Partnerships() {
   });
 
   useEffect(() => {
-    if (!user) return;
+    if (!user || !canManagePartnerships || !currentAppUserId) {
+      setPartnerships([]);
+      setLoading(false);
+      return;
+    }
+
     const fetchPartnerships = async () => {
+      setLoading(true);
       const { data, error } = await supabase
         .from('partnerships')
-        .select('*')
-        .order('created_at', { ascending: false });
+        .select('id, company_name, industry, contact_person, position, phone, email, lead_source, stage, voucher_type, vouchers_allocated, vouchers_redeemed, revenue_generated, cost_per_redemption, target_date, last_contacted_date, campaign_id, owner_user_id, notes, created_at, updated_at')
+        .order('created_at', { ascending: false })
+        .limit(500);
 
       if (error) {
         console.error("Error fetching partnerships:", error);
+        setFeedback({ tone: 'error', message: 'Failed to load partnerships.' });
         setLoading(false);
         return;
       }
@@ -84,17 +99,27 @@ export function Partnerships() {
     });
 
     return () => unsubscribe();
-  }, [user]);
+  }, [user, canManagePartnerships, currentAppUserId]);
 
   const handleCreateSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!user || !userData || !canManagePartnerships) return;
+    if (!user || !canManagePartnerships || !currentAppUserId) {
+      setFeedback({ tone: 'error', message: 'Active admin profile is required.' });
+      return;
+    }
+
+    const companyName = formData.companyName.trim();
+    if (!companyName) {
+      setFeedback({ tone: 'error', message: 'Company name is required.' });
+      return;
+    }
+
     try {
       const timestamp = nowIso();
       const { error } = await supabase
         .from('partnerships')
         .insert({
-          company_name: formData.companyName.trim(),
+          company_name: companyName,
           industry: formData.industry.trim(),
           contact_person: formData.contactPerson.trim(),
           position: formData.position.trim(),
@@ -103,14 +128,14 @@ export function Partnerships() {
           lead_source: formData.leadSource.trim(),
           stage: formData.stage,
           voucher_type: formData.voucherType,
-          vouchers_allocated: Number(formData.vouchersAllocated) || 0,
+          vouchers_allocated: toNumber(formData.vouchersAllocated),
           vouchers_redeemed: 0,
           revenue_generated: 0,
           cost_per_redemption: 0,
           target_date: toNullableDate(formData.targetDate),
           last_contacted_date: new Date().toISOString().split('T')[0],
           campaign_id: toNullableUuid(formData.campaignId),
-          owner_user_id: userData.id,
+          owner_user_id: currentAppUserId,
           notes: formData.notes.trim(),
           created_at: timestamp,
           updated_at: timestamp
@@ -120,15 +145,21 @@ export function Partnerships() {
 
       setIsCreating(false);
       setFormData({ companyName: '', industry: '', contactPerson: '', position: '', phone: '', email: '', leadSource: '', stage: 'Prospect', voucherType: 'Digital', vouchersAllocated: '', targetDate: '', campaignId: '', notes: '' });
+      setFeedback({ tone: 'success', message: 'Partnership saved.' });
     } catch (error) {
        console.error("Error creating partnership:", error);
-       alert("Partnership save failed.");
+       setFeedback({ tone: 'error', message: 'Partnership save failed.' });
     }
   };
 
   const handleUpdateSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingPartnership || !canManagePartnerships) return;
+    const partnershipId = toNullableUuid(editingPartnership?.id);
+    if (!editingPartnership || !canManagePartnerships || !currentAppUserId || !partnershipId) {
+      setFeedback({ tone: 'error', message: 'A valid partnership and active admin profile are required.' });
+      return;
+    }
+
     try {
       const { error } = await supabase
         .from('partnerships')
@@ -142,24 +173,25 @@ export function Partnerships() {
           lead_source: editingPartnership.leadSource || '',
           stage: editingPartnership.stage || 'Prospect',
           voucher_type: editingPartnership.voucherType || 'Digital',
-          vouchers_allocated: Number(editingPartnership.vouchersAllocated) || 0,
-          vouchers_redeemed: Number(editingPartnership.vouchersRedeemed) || 0,
-          revenue_generated: Number(editingPartnership.revenueGenerated) || 0,
-          cost_per_redemption: Number(editingPartnership.costPerRedemption) || 0,
+          vouchers_allocated: toNumber(editingPartnership.vouchersAllocated),
+          vouchers_redeemed: toNumber(editingPartnership.vouchersRedeemed),
+          revenue_generated: toNumber(editingPartnership.revenueGenerated),
+          cost_per_redemption: toNumber(editingPartnership.costPerRedemption),
           target_date: toNullableDate(editingPartnership.targetDate),
           last_contacted_date: toNullableDate(editingPartnership.lastContactedDate),
           campaign_id: toNullableUuid(editingPartnership.campaignId),
           notes: editingPartnership.notes || '',
           updated_at: nowIso()
         })
-        .eq('id', editingPartnership.id);
+        .eq('id', partnershipId);
 
       if (error) throw error;
 
       setEditingPartnership(null);
+      setFeedback({ tone: 'success', message: 'Partnership updated.' });
     } catch (error) {
       console.error("Error updating partnership:", error);
-      alert("Partnership update failed.");
+      setFeedback({ tone: 'error', message: 'Partnership update failed.' });
     }
   };
 
@@ -182,6 +214,19 @@ export function Partnerships() {
           </button>
         )}
       </header>
+
+      {feedback && (
+        <div className={`flex items-start justify-between gap-4 rounded-xl border px-4 py-3 text-sm font-medium ${
+          feedback.tone === 'success'
+            ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+            : 'border-rose-200 bg-rose-50 text-rose-800'
+        }`}>
+          <span>{feedback.message}</span>
+          <button type="button" onClick={() => setFeedback(null)} className="shrink-0 opacity-70 transition-opacity hover:opacity-100">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
 
       {/* KPI Overview */}
       <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">

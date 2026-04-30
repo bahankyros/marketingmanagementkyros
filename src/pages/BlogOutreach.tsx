@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { BookOpen, Plus, Globe, ExternalLink, PenSquare, X } from 'lucide-react';
 import { useAuth } from '../lib/AuthContext';
 import { supabase } from '../lib/supabase';
-import { nowIso, subscribeToTable, toNullableDate, toNumber } from '../lib/supabaseData';
+import { nowIso, subscribeToTable, toNullableDate, toNullableUuid, toNumber } from '../lib/supabaseData';
 
 function normalizeBlogOutreach(row: any) {
   return {
@@ -20,13 +20,20 @@ function normalizeBlogOutreach(row: any) {
   };
 }
 
+type OutreachFeedback = {
+  tone: 'success' | 'error';
+  message: string;
+};
+
 export function BlogOutreach() {
   const { user, userData } = useAuth();
   const role = userData?.role;
   const canManageOutreach = role === 'admin' || role === 'finance';
+  const currentAppUserId = toNullableUuid(userData?.id);
   
   const [outreach, setOutreach] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [feedback, setFeedback] = useState<OutreachFeedback | null>(null);
   
   const [isCreating, setIsCreating] = useState(false);
   const [editingBlog, setEditingBlog] = useState<any>(null);
@@ -41,15 +48,29 @@ export function BlogOutreach() {
   });
 
   useEffect(() => {
-    if (!user) return;
+    if (!user || !canManageOutreach || !currentAppUserId) {
+      setOutreach([]);
+      setLoading(false);
+      return;
+    }
+
     const fetchOutreach = async () => {
-      const { data, error } = await supabase
+      setLoading(true);
+      let request = supabase
         .from('blog_outreach')
-        .select('*')
-        .order('created_at', { ascending: false });
+        .select('id, domain, target_date, keywords, expected_reach, link, status, pic_user_id, created_at, updated_at')
+        .order('created_at', { ascending: false })
+        .limit(500);
+
+      if (role === 'finance') {
+        request = request.eq('pic_user_id', currentAppUserId);
+      }
+
+      const { data, error } = await request;
 
       if (error) {
         console.error("Error fetching outreach:", error);
+        setFeedback({ tone: 'error', message: 'Failed to load outreach targets.' });
         setLoading(false);
         return;
       }
@@ -64,23 +85,33 @@ export function BlogOutreach() {
     });
 
     return () => unsubscribe();
-  }, [user]);
+  }, [user, canManageOutreach, currentAppUserId, role]);
 
   const handleCreateSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!user || !userData || !canManageOutreach) return;
+    if (!user || !canManageOutreach || !currentAppUserId) {
+      setFeedback({ tone: 'error', message: 'Active finance/admin profile is required.' });
+      return;
+    }
+
+    const domain = formData.domain.trim();
+    if (!domain) {
+      setFeedback({ tone: 'error', message: 'Domain is required.' });
+      return;
+    }
+
     try {
       const timestamp = nowIso();
       const { error } = await supabase
         .from('blog_outreach')
         .insert({
-          domain: formData.domain.trim(),
+          domain,
           target_date: toNullableDate(formData.targetDate),
           keywords: formData.keywords.trim(),
-          expected_reach: Number(formData.expectedReach) || 0,
+          expected_reach: toNumber(formData.expectedReach),
           link: formData.link.trim(),
           status: formData.status,
-          pic_user_id: userData.id,
+          pic_user_id: currentAppUserId,
           created_at: timestamp,
           updated_at: timestamp
         });
@@ -89,35 +120,48 @@ export function BlogOutreach() {
 
       setIsCreating(false);
       setFormData({ domain: '', targetDate: '', keywords: '', expectedReach: '', link: '', status: 'Not Contacted' });
+      setFeedback({ tone: 'success', message: 'Outreach target saved.' });
     } catch (error) {
       console.error("Error creating outreach:", error);
-      alert("Failed to track new blog outreach.");
+      setFeedback({ tone: 'error', message: 'Failed to track new blog outreach.' });
     }
   };
 
   const handleUpdateSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingBlog || !canManageOutreach) return;
+    const outreachId = toNullableUuid(editingBlog?.id);
+    if (!editingBlog || !canManageOutreach || !currentAppUserId || !outreachId) {
+      setFeedback({ tone: 'error', message: 'A valid outreach record and active profile are required.' });
+      return;
+    }
+
     try {
-      const { error } = await supabase
+      let request = supabase
         .from('blog_outreach')
         .update({
           domain: editingBlog.domain || '',
           target_date: toNullableDate(editingBlog.targetDate),
           keywords: editingBlog.keywords || '',
-          expected_reach: Number(editingBlog.expectedReach) || 0,
+          expected_reach: toNumber(editingBlog.expectedReach),
           link: editingBlog.link || '',
           status: editingBlog.status || 'Not Contacted',
           updated_at: nowIso()
         })
-        .eq('id', editingBlog.id);
+        .eq('id', outreachId);
+
+      if (role === 'finance') {
+        request = request.eq('pic_user_id', currentAppUserId);
+      }
+
+      const { error } = await request;
 
       if (error) throw error;
 
       setEditingBlog(null);
+      setFeedback({ tone: 'success', message: 'Outreach target updated.' });
     } catch (error) {
       console.error("Error updating outreach:", error);
-      alert("Failed to update outreach.");
+      setFeedback({ tone: 'error', message: 'Failed to update outreach.' });
     }
   };
 
@@ -137,6 +181,19 @@ export function BlogOutreach() {
           </button>
         )}
       </header>
+
+      {feedback && (
+        <div className={`flex items-start justify-between gap-4 rounded-xl border px-4 py-3 text-sm font-medium ${
+          feedback.tone === 'success'
+            ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+            : 'border-rose-200 bg-rose-50 text-rose-800'
+        }`}>
+          <span>{feedback.message}</span>
+          <button type="button" onClick={() => setFeedback(null)} className="shrink-0 opacity-70 transition-opacity hover:opacity-100">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
 
       {/* Target Tracker */}
       <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="bg-gradient-to-br from-cyan-50 to-blue-50 border border-cyan-100 rounded-2xl p-6 flex items-center justify-between shadow-sm">

@@ -3,7 +3,7 @@ import { NavLink, Outlet, useLocation } from 'react-router';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   LayoutDashboard, Megaphone, Handshake, MonitorPlay, Calendar, Smile, BookOpen, Truck,
-  CheckSquare, BarChart, Settings, LogOut, Ticket, Bell, TrendingUp, Menu, X
+  CheckSquare, BarChart, Settings, LogOut, Ticket, Bell, TrendingUp, Menu, X, MousePointerClick
 } from 'lucide-react';
 import { useAuth } from '../lib/AuthContext';
 
@@ -21,12 +21,13 @@ const navItems: Array<{
   { path: '/events', label: 'Calendar', icon: <Calendar size={20} />, allowedRoles: ['admin', 'supervisor', 'pic'] },
   { path: '/inbox', label: 'Inbox', icon: <Bell size={20} />, allowedRoles: ['admin', 'supervisor', 'pic'] },
   { path: '/mascots', label: 'Mascot', icon: <Smile size={20} />, allowedRoles: ['admin', 'supervisor', 'pic'] },
-  { path: '/blog', label: 'Blog', icon: <BookOpen size={20} />, adminOnly: true },
-  { path: '/delivery', label: 'Delivery', icon: <Truck size={20} /> },
+  { path: '/blog', label: 'Blog', icon: <BookOpen size={20} />, allowedRoles: ['admin', 'finance'] },
+  { path: '/ads', label: 'Paid Ads', icon: <MousePointerClick size={20} />, allowedRoles: ['admin', 'finance'] },
+  { path: '/delivery', label: 'Delivery', icon: <Truck size={20} />, allowedRoles: ['admin', 'supervisor', 'pic'] },
   { path: '/vouchers', label: 'Vouchers', icon: <Ticket size={20} />, allowedRoles: ['admin', 'supervisor', 'pic'] },
   { path: '/tasks', label: 'Tasks', icon: <CheckSquare size={20} />, allowedRoles: ['admin', 'supervisor', 'pic'] },
   { path: '/sales', label: 'Sales', icon: <TrendingUp size={20} />, adminOnly: true },
-  { path: '/reports', label: 'Reports', icon: <BarChart size={20} />, adminOnly: true },
+  { path: '/reports', label: 'Reports', icon: <BarChart size={20} />, allowedRoles: ['admin', 'finance'] },
   { path: '/settings', label: 'Settings', icon: <Settings size={20} />, adminOnly: true },
 ];
 

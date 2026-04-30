@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../lib/AuthContext';
 import { supabase } from '../lib/supabase';
-import { subscribeToTable } from '../lib/supabaseData';
+import { subscribeToTable, toNullableUuid } from '../lib/supabaseData';
 
 const CHECKLIST_TEMPLATE_TYPES = ['Digital', 'Physical', 'Hybrid'] as const;
 const CHECKLIST_TEMPLATE_CATEGORIES = [
@@ -166,11 +166,6 @@ function normalizeGlobalSettings(row: any) {
   };
 }
 
-function toNullableUuid(value: string) {
-  const normalized = value.trim();
-  return normalized || null;
-}
-
 function getManagedUserProvisioningState(user: ManagedUserRecord) {
   return user.auth_uid.trim() ? 'claimed' : 'provisional';
 }
@@ -223,6 +218,7 @@ export function Settings() {
   const [loading, setLoading] = useState(true);
   // ... state ...
   const [saving, setSaving] = useState(false);
+  const [settingsFeedback, setSettingsFeedback] = useState<UserFeedback | null>(null);
   // ... globals state ...
   const [globals, setGlobals] = useState({
     partnershipTarget: 30,
@@ -464,8 +460,15 @@ export function Settings() {
   }, [user, canManageSettings]);
 
   const handleGlobalSave = async () => {
-    if (!user || !canManageSettings) return;
+    if (!user || !userData || !canManageSettings) return;
+    const currentAppUserId = toNullableUuid(userData.id);
+    if (!currentAppUserId) {
+      setSettingsFeedback({ tone: 'error', message: 'Active admin profile is required before saving settings.' });
+      return;
+    }
+
     setSaving(true);
+    setSettingsFeedback(null);
     try {
       const { error } = await supabase
         .from('settings')
@@ -480,16 +483,16 @@ export function Settings() {
           social_target: Number(globals.socialTarget) || 0,
           ad_budget: Number(globals.adBudget) || 0,
           total_marketing_budget: Number(globals.totalMarketingBudget) || 0,
-          updated_by_user_id: userData?.id || null,
+          updated_by_user_id: currentAppUserId,
           updated_at: nowIso()
         }, { onConflict: 'key' });
 
       if (error) throw error;
 
-      alert('Settings saved.');
+      setSettingsFeedback({ tone: 'success', message: 'Settings saved.' });
     } catch (error) {
       console.error('Error saving globals:', error);
-      alert('Settings save failed.');
+      setSettingsFeedback({ tone: 'error', message: 'Settings save failed.' });
     } finally {
       setSaving(false);
     }
@@ -515,6 +518,11 @@ export function Settings() {
 
     const outletName = newOutlet.name.trim();
     if (!outletName) return;
+    const editingOutletId = editingOutlet ? toNullableUuid(editingOutlet) : null;
+    if (editingOutlet && !editingOutletId) {
+      setSettingsFeedback({ tone: 'error', message: 'Invalid outlet record selected.' });
+      return;
+    }
 
     try {
       const baseSales = Number(newOutlet.baseSales) || 0;
@@ -528,7 +536,7 @@ export function Settings() {
               base_sales: baseSales,
               updated_at: timestamp
             })
-            .eq('id', editingOutlet)
+            .eq('id', editingOutletId)
         : await supabase
             .from('outlets')
             .insert({
@@ -546,19 +554,26 @@ export function Settings() {
 
       await fetchOutlets();
       resetOutletForm();
+      setSettingsFeedback({ tone: 'success', message: editingOutlet ? 'Outlet updated.' : 'Outlet added.' });
     } catch (error) {
       console.error(`Error ${editingOutlet ? 'updating' : 'adding'} outlet:`, error);
+      setSettingsFeedback({ tone: 'error', message: editingOutlet ? 'Outlet update failed.' : 'Outlet creation failed.' });
     }
   };
 
   const handleDeleteOutlet = async (id: string) => {
     if (!canManageSettings) return;
+    const outletId = toNullableUuid(id);
+    if (!outletId) {
+      setSettingsFeedback({ tone: 'error', message: 'Invalid outlet record selected.' });
+      return;
+    }
     if (!window.confirm('Are you sure you want to delete this outlet?')) return;
     try {
       const { error } = await supabase
         .from('outlets')
         .delete()
-        .eq('id', id);
+        .eq('id', outletId);
 
       if (error) {
         throw error;
@@ -569,9 +584,10 @@ export function Settings() {
       }
 
       await fetchOutlets();
+      setSettingsFeedback({ tone: 'success', message: 'Outlet deleted.' });
     } catch (error) {
       console.error('Error deleting outlet:', error);
-      window.alert('This outlet cannot be deleted because it is currently in use by assigned users or related records.');
+      setSettingsFeedback({ tone: 'error', message: 'This outlet cannot be deleted because it is currently in use.' });
     }
   };
 
@@ -615,6 +631,7 @@ export function Settings() {
     const existingManagedUser = editingUserId
       ? managedUsers.find((managedUser) => managedUser.id === editingUserId) || null
       : null;
+    const editingManagedUserId = editingUserId ? toNullableUuid(editingUserId) : null;
 
     if (!email) {
       setUserFeedback({ tone: 'error', message: 'Email is required.' });
@@ -628,6 +645,11 @@ export function Settings() {
 
     if (isOutletScopedManagedRole(userForm.role) && (!outletId || !outletName)) {
       setUserFeedback({ tone: 'error', message: 'Supervisor/PIC users need an outlet from master data.' });
+      return;
+    }
+
+    if (editingUserId && !editingManagedUserId) {
+      setUserFeedback({ tone: 'error', message: 'Invalid user profile selected.' });
       return;
     }
 
@@ -650,7 +672,7 @@ export function Settings() {
         const { data, error } = await supabase
           .from('users')
           .update(payload)
-          .eq('id', editingUserId)
+          .eq('id', editingManagedUserId)
           .select('id, auth_user_id, email, display_name, role, outlet_id, outlet_name, status, photo_url')
           .single();
 
@@ -712,10 +734,17 @@ export function Settings() {
 
   const handleDeleteManagedUser = async () => {
     if (!canManageUsers || !deletingUser) return;
+    const deletingManagedUserId = toNullableUuid(deletingUser.id);
 
     const currentUserEmail = user?.email?.trim().toLowerCase() || '';
     if (deletingUser.id === user?.uid || deletingUser.auth_uid === user?.uid || (currentUserEmail && deletingUser.email.toLowerCase() === currentUserEmail)) {
       setUserFeedback({ tone: 'error', message: 'You cannot delete your own profile.' });
+      setDeletingUser(null);
+      return;
+    }
+
+    if (!deletingManagedUserId) {
+      setUserFeedback({ tone: 'error', message: 'Invalid user profile selected.' });
       setDeletingUser(null);
       return;
     }
@@ -726,7 +755,7 @@ export function Settings() {
       const { error } = await supabase
         .from('users')
         .delete()
-        .eq('id', deletingUser.id);
+        .eq('id', deletingManagedUserId);
 
       if (error) {
         throw error;
@@ -803,6 +832,7 @@ export function Settings() {
 
     const name = templateForm.name.trim();
     const tasks = templateForm.tasks.map(task => task.trim()).filter(Boolean);
+    const templateId = editingTemplateId ? toNullableUuid(editingTemplateId) : null;
     if (!name) {
       setTemplateFeedback({ tone: 'error', message: 'Name is required.' });
       return;
@@ -810,6 +840,11 @@ export function Settings() {
 
     if (tasks.length === 0) {
       setTemplateFeedback({ tone: 'error', message: 'Add at least one step.' });
+      return;
+    }
+
+    if (editingTemplateId && !templateId) {
+      setTemplateFeedback({ tone: 'error', message: 'Invalid template selected.' });
       return;
     }
 
@@ -826,21 +861,21 @@ export function Settings() {
             category: templateForm.category,
             updated_at: timestamp
           })
-          .eq('id', editingTemplateId);
+          .eq('id', templateId);
 
         if (error) throw error;
 
         const { error: deleteItemsError } = await supabase
           .from('checklist_template_items')
           .delete()
-          .eq('template_id', editingTemplateId);
+          .eq('template_id', templateId);
 
         if (deleteItemsError) throw deleteItemsError;
 
         const { error: itemError } = await supabase
           .from('checklist_template_items')
           .insert(tasks.map((task, index) => ({
-            template_id: editingTemplateId,
+            template_id: templateId,
             task,
             sort_order: index,
             created_at: timestamp,
@@ -863,11 +898,15 @@ export function Settings() {
           .single();
 
         if (error) throw error;
+        const createdTemplateId = toNullableUuid(data.id);
+        if (!createdTemplateId) {
+          throw new Error('Template was created without a valid id.');
+        }
 
         const { error: itemError } = await supabase
           .from('checklist_template_items')
           .insert(tasks.map((task, index) => ({
-            template_id: data.id,
+            template_id: createdTemplateId,
             task,
             sort_order: index,
             created_at: timestamp,
@@ -889,13 +928,19 @@ export function Settings() {
 
   const handleDeleteTemplate = async () => {
     if (!deletingTemplate || !canManageSettings) return;
+    const templateId = toNullableUuid(deletingTemplate.id);
+    if (!templateId) {
+      setTemplateFeedback({ tone: 'error', message: 'Invalid template selected.' });
+      setDeletingTemplate(null);
+      return;
+    }
 
     setSavingTemplate(true);
     try {
       const { error } = await supabase
         .from('checklist_templates')
         .delete()
-        .eq('id', deletingTemplate.id);
+        .eq('id', templateId);
 
       if (error) throw error;
 
@@ -962,6 +1007,16 @@ export function Settings() {
           <span className="text-sm font-medium text-neutral-500">Admin only</span>
         )}
       </header>
+
+      {settingsFeedback && (
+        <div className={`rounded-xl border px-4 py-3 text-sm font-medium ${
+          settingsFeedback.tone === 'success'
+            ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+            : 'border-rose-200 bg-rose-50 text-rose-800'
+        }`}>
+          {settingsFeedback.message}
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         {/* KPI SETTINGS */}

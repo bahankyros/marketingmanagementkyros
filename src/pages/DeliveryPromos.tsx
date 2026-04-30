@@ -25,7 +25,7 @@ import {
   YAxis
 } from 'recharts';
 import { supabase } from '../lib/supabase';
-import { subscribeToTable } from '../lib/supabaseData';
+import { subscribeToTable, toNullableUuid } from '../lib/supabaseData';
 import { useAuth } from '../lib/AuthContext';
 
 type GrabDailySalesRow = {
@@ -54,7 +54,7 @@ type GrabDailySalesInsert = {
   average_transaction_amount: number;
   average_rating: number;
   source_file_name?: string;
-  uploaded_by_user_id?: string | null;
+  uploaded_by_user_id?: string;
 };
 
 type UploadFeedback = {
@@ -281,7 +281,7 @@ function buildWeekdayHeatmap(rows: GrabDailySalesRow[]) {
 }
 
 export function DeliveryPromos() {
-  const { userData } = useAuth();
+  const { user, userData } = useAuth();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [rows, setRows] = useState<GrabDailySalesRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -291,13 +291,37 @@ export function DeliveryPromos() {
   const [selectedMerchant, setSelectedMerchant] = useState('All Outlets');
   const role = userData?.role?.toLowerCase().trim();
   const isAdmin = role === 'admin';
+  const isOutletScopedUser = role === 'supervisor' || role === 'pic';
+  const canViewDailySales = isAdmin || isOutletScopedUser;
+  const currentAppUserId = toNullableUuid(userData?.id);
+  const outletMerchantName = typeof userData?.outlet_name === 'string' ? userData.outlet_name.trim() : '';
 
   const loadDailySales = useCallback(async () => {
+    if (!user || !canViewDailySales) {
+      setRows([]);
+      setLoading(false);
+      return;
+    }
+
+    if (!isAdmin && !outletMerchantName) {
+      setRows([]);
+      setFeedback({ tone: 'error', message: 'Your profile needs an outlet before Grab daily sales can load.' });
+      setLoading(false);
+      return;
+    }
+
     setLoading(true);
-    const { data, error } = await supabase
+    let request = supabase
       .from('grab_daily_sales')
-      .select('*')
-      .order('date', { ascending: true });
+      .select('id, date, country, city, merchant, grab_service, gross_sales, net_sales, transactions, average_transaction_amount, average_rating')
+      .order('date', { ascending: true })
+      .limit(5000);
+
+    if (!isAdmin) {
+      request = request.ilike('merchant', outletMerchantName);
+    }
+
+    const { data, error } = await request;
 
     if (error) {
       console.error('Error loading Grab daily sales:', error);
@@ -309,9 +333,15 @@ export function DeliveryPromos() {
 
     setRows((data || []).map(normalizeGrabDailySales));
     setLoading(false);
-  }, []);
+  }, [user, canViewDailySales, isAdmin, outletMerchantName]);
 
   useEffect(() => {
+    if (!canViewDailySales) {
+      setRows([]);
+      setLoading(false);
+      return;
+    }
+
     void loadDailySales();
 
     const unsubscribe = subscribeToTable('grab-daily-sales-page', 'grab_daily_sales', () => {
@@ -319,7 +349,7 @@ export function DeliveryPromos() {
     });
 
     return () => unsubscribe();
-  }, [loadDailySales]);
+  }, [canViewDailySales, loadDailySales]);
 
   const uniqueMerchants = useMemo<string[]>(
     () => Array.from(new Set<string>(rows
@@ -368,6 +398,10 @@ export function DeliveryPromos() {
 
   const handleFiles = async (fileList: FileList | File[]) => {
     if (!isAdmin) return;
+    if (!currentAppUserId) {
+      setFeedback({ tone: 'error', message: 'Active admin profile is required before importing Grab sales.' });
+      return;
+    }
 
     const file = fileList[0];
     if (!file) return;
@@ -380,7 +414,7 @@ export function DeliveryPromos() {
       const rowsToInsert = cleanedRows.map((row) => ({
         ...row,
         source_file_name: file.name,
-        uploaded_by_user_id: userData?.id || null
+        uploaded_by_user_id: currentAppUserId
       }));
       const { error } = await supabase
         .from('grab_daily_sales')
@@ -559,7 +593,7 @@ export function DeliveryPromos() {
             <p className="mt-1 text-sm text-neutral-500">Gross sales and net sales by transaction date.</p>
           </div>
           <span className="rounded-full bg-neutral-100 px-3 py-1 text-xs font-bold text-neutral-600">
-            {loading ? 'Loading...' : `${dailyTrend.length} days · ${selectedMerchant}`}
+            {loading ? 'Loading...' : `${dailyTrend.length} days - ${selectedMerchant}`}
           </span>
         </div>
 

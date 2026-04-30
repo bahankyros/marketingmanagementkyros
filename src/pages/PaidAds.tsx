@@ -24,14 +24,21 @@ function normalizePaidAd(row: any) {
   };
 }
 
+type AdsFeedback = {
+  tone: 'success' | 'error';
+  message: string;
+};
+
 export function PaidAds() {
   const { user, userData } = useAuth();
   const { campaigns } = useCampaigns();
   const role = userData?.role;
   const canManageAds = role === 'admin' || role === 'finance';
+  const currentAppUserId = toNullableUuid(userData?.id);
   
   const [ads, setAds] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [feedback, setFeedback] = useState<AdsFeedback | null>(null);
   
   const [isCreating, setIsCreating] = useState(false);
   const [editingAd, setEditingAd] = useState<any>(null);
@@ -49,15 +56,29 @@ export function PaidAds() {
   });
 
   useEffect(() => {
-    if (!user) return;
+    if (!user || !canManageAds || !currentAppUserId) {
+      setAds([]);
+      setLoading(false);
+      return;
+    }
+
     const fetchAds = async () => {
-      const { data, error } = await supabase
+      setLoading(true);
+      let request = supabase
         .from('paid_ads')
-        .select('*')
-        .order('created_at', { ascending: false });
+        .select('id, platform, campaign_name, objective, campaign_id, spend, reach, results, result_type, engagement, owner_user_id, created_at, updated_at')
+        .order('created_at', { ascending: false })
+        .limit(500);
+
+      if (role === 'finance') {
+        request = request.eq('owner_user_id', currentAppUserId);
+      }
+
+      const { data, error } = await request;
 
       if (error) {
         console.error("Error fetching paid ads:", error);
+        setFeedback({ tone: 'error', message: 'Failed to load paid ads.' });
         setLoading(false);
         return;
       }
@@ -72,26 +93,36 @@ export function PaidAds() {
     });
 
     return () => unsubscribe();
-  }, [user]);
+  }, [user, canManageAds, currentAppUserId, role]);
 
   const handleCreateSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!user || !userData || !canManageAds) return;
+    if (!user || !canManageAds || !currentAppUserId) {
+      setFeedback({ tone: 'error', message: 'Active finance/admin profile is required.' });
+      return;
+    }
+
+    const campaignName = formData.campaignName.trim();
+    if (!campaignName) {
+      setFeedback({ tone: 'error', message: 'Campaign name is required.' });
+      return;
+    }
+
     try {
       const timestamp = nowIso();
       const { error } = await supabase
         .from('paid_ads')
         .insert({
           platform: formData.platform,
-          campaign_name: formData.campaignName.trim(),
+          campaign_name: campaignName,
           objective: formData.objective,
           campaign_id: toNullableUuid(formData.campaignId),
-          spend: Number(formData.spend) || 0,
-          reach: Number(formData.reach) || 0,
-          results: Number(formData.results) || 0,
+          spend: toNumber(formData.spend),
+          reach: toNumber(formData.reach),
+          results: toNumber(formData.results),
           result_type: formData.resultType,
-          engagement: Number(formData.engagement) || 0,
-          owner_user_id: userData.id,
+          engagement: toNumber(formData.engagement),
+          owner_user_id: currentAppUserId,
           created_at: timestamp,
           updated_at: timestamp
         });
@@ -100,38 +131,51 @@ export function PaidAds() {
 
       setIsCreating(false);
       setFormData({ platform: 'Meta', campaignName: '', objective: 'Traffic', campaignId: '', spend: '', reach: '', results: '', resultType: 'Video View', engagement: '' });
+      setFeedback({ tone: 'success', message: 'Ad performance saved.' });
     } catch (error) {
        console.error("Error logging ad data:", error);
-       alert("Failed to track ad spend.");
+       setFeedback({ tone: 'error', message: 'Failed to track ad spend.' });
     }
   };
 
   const handleUpdateSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingAd || !canManageAds) return;
+    const adId = toNullableUuid(editingAd?.id);
+    if (!editingAd || !canManageAds || !currentAppUserId || !adId) {
+      setFeedback({ tone: 'error', message: 'A valid ad record and active profile are required.' });
+      return;
+    }
+
     try {
-      const { error } = await supabase
+      let request = supabase
         .from('paid_ads')
         .update({
           platform: editingAd.platform || 'Meta',
           campaign_name: editingAd.campaignName || '',
           objective: editingAd.objective || 'Traffic',
           campaign_id: toNullableUuid(editingAd.campaignId),
-          spend: Number(editingAd.spend) || 0,
-          reach: Number(editingAd.reach) || 0,
-          results: Number(editingAd.results) || 0,
+          spend: toNumber(editingAd.spend),
+          reach: toNumber(editingAd.reach),
+          results: toNumber(editingAd.results),
           result_type: editingAd.resultType || 'Video View',
-          engagement: Number(editingAd.engagement) || 0,
+          engagement: toNumber(editingAd.engagement),
           updated_at: nowIso()
         })
-        .eq('id', editingAd.id);
+        .eq('id', adId);
+
+      if (role === 'finance') {
+        request = request.eq('owner_user_id', currentAppUserId);
+      }
+
+      const { error } = await request;
 
       if (error) throw error;
 
       setEditingAd(null);
+      setFeedback({ tone: 'success', message: 'Ad performance updated.' });
     } catch (error) {
       console.error("Error updating ad data:", error);
-      alert("Failed to update ad data.");
+      setFeedback({ tone: 'error', message: 'Failed to update ad data.' });
     }
   };
 
@@ -165,6 +209,19 @@ export function PaidAds() {
           </button>
         )}
       </header>
+
+      {feedback && (
+        <div className={`flex items-start justify-between gap-4 rounded-xl border px-4 py-3 text-sm font-medium ${
+          feedback.tone === 'success'
+            ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+            : 'border-rose-200 bg-rose-50 text-rose-800'
+        }`}>
+          <span>{feedback.message}</span>
+          <button type="button" onClick={() => setFeedback(null)} className="shrink-0 opacity-70 transition-opacity hover:opacity-100">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
 
       <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
          <div className="bg-white p-6 rounded-2xl shadow-sm border border-neutral-100">
