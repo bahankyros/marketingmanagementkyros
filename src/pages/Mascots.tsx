@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../lib/AuthContext';
 import { supabase } from '../lib/supabase';
+import { toNullableUuid } from '../lib/supabaseData';
 
 type MascotBookingStatus = 'pending' | 'approved' | 'rejected' | 'cancelled';
 
@@ -152,10 +153,13 @@ export function Mascots() {
   const { user, userData } = useAuth();
   const normalizedRole = userData?.role?.toLowerCase().trim();
   const isAdmin = normalizedRole === 'admin';
-  const isSupervisor = normalizedRole === 'supervisor' || normalizedRole === 'pic';
-  const canRequestMascot = isAdmin || isSupervisor;
+  const isOutletScopedUser = normalizedRole === 'supervisor' || normalizedRole === 'pic';
+  const canRequestMascot = isAdmin || isOutletScopedUser;
   const canLogCondition = isAdmin;
-  const canViewMascotHistory = isAdmin || isSupervisor;
+  const canViewMascotHistory = isAdmin || isOutletScopedUser;
+  const currentAppUserId = toNullableUuid(userData?.id);
+  const assignedOutletId = toNullableUuid(userData?.outlet_id);
+  const outletScopedMissingOutlet = isOutletScopedUser && !assignedOutletId;
 
   const [activeTab, setActiveTab] = useState<'requests' | 'logs'>('requests');
   const [view, setView] = useState<'default' | 'book' | 'logCondition'>('default');
@@ -179,13 +183,13 @@ export function Mascots() {
   });
 
   useEffect(() => {
-    if (!user || !canRequestMascot) {
+    if (!user || !userData || !canRequestMascot) {
       setBookingRequests([]);
       setLoadingBookings(false);
       return;
     }
 
-    if (isSupervisor && !userData?.outlet_id) {
+    if (outletScopedMissingOutlet) {
       setBookingRequests([]);
       setLoadingBookings(false);
       return;
@@ -199,10 +203,12 @@ export function Mascots() {
       let request = supabase
         .from('mascot_bookings')
         .select('*')
-        .order('start_at', { ascending: true });
+        .gte('end_at', new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())
+        .order('start_at', { ascending: true })
+        .limit(200);
 
-      if (!isAdmin) {
-        request = request.eq('outlet_id', userData?.outlet_id || '');
+      if (isOutletScopedUser) {
+        request = request.eq('outlet_id', assignedOutletId || '');
       }
 
       const { data, error } = await request;
@@ -241,10 +247,10 @@ export function Mascots() {
       isMounted = false;
       void supabase.removeChannel(channel);
     };
-  }, [user, userData?.outlet_id, canRequestMascot, isAdmin, isSupervisor]);
+  }, [user, userData, canRequestMascot, isAdmin, isOutletScopedUser, assignedOutletId, outletScopedMissingOutlet]);
 
   useEffect(() => {
-    if (!user || !canViewMascotHistory) {
+    if (!user || !userData || !canViewMascotHistory || !currentAppUserId) {
       setLogs([]);
       setLoadingLogs(false);
       return;
@@ -255,10 +261,17 @@ export function Mascots() {
     const loadLogs = async () => {
       setLoadingLogs(true);
 
-      const { data, error } = await supabase
+      let request = supabase
         .from('mascot_logs')
         .select('*')
-        .order('created_at', { ascending: false });
+        .order('created_at', { ascending: false })
+        .limit(100);
+
+      if (!isAdmin) {
+        request = request.eq('assigned_pic_user_id', currentAppUserId);
+      }
+
+      const { data, error } = await request;
 
       if (!isMounted) return;
 
@@ -285,10 +298,10 @@ export function Mascots() {
       isMounted = false;
       void supabase.removeChannel(channel);
     };
-  }, [user, canViewMascotHistory]);
+  }, [user, userData, canViewMascotHistory, isAdmin, currentAppUserId]);
 
   useEffect(() => {
-    if (!user || !isAdmin) {
+    if (!user || !userData || !isAdmin) {
       setOutlets([]);
       return;
     }
@@ -299,7 +312,8 @@ export function Mascots() {
       const { data, error } = await supabase
         .from('outlets')
         .select('id, name')
-        .order('name', { ascending: true });
+        .order('name', { ascending: true })
+        .limit(500);
 
       if (!isMounted) return;
 
@@ -310,9 +324,12 @@ export function Mascots() {
       }
 
       setOutlets((data || [])
-        .map((outlet) => typeof outlet.name === 'string' && outlet.name.trim()
-          ? { id: outlet.id, name: outlet.name.trim() }
-          : null)
+        .map((outlet) => {
+          const outletId = toNullableUuid(outlet.id);
+          return outletId && typeof outlet.name === 'string' && outlet.name.trim()
+            ? { id: outletId, name: outlet.name.trim() }
+            : null;
+        })
         .filter((outlet): outlet is OutletOption => outlet !== null));
     };
 
@@ -329,16 +346,16 @@ export function Mascots() {
       isMounted = false;
       void supabase.removeChannel(channel);
     };
-  }, [user, isAdmin]);
+  }, [user, userData, isAdmin]);
 
   useEffect(() => {
-    if (isSupervisor) {
+    if (isOutletScopedUser) {
       setBookingForm((current) => ({
         ...current,
-        outlet_id: userData?.outlet_id || ''
+        outlet_id: assignedOutletId || ''
       }));
     }
-  }, [isSupervisor, userData?.outlet_id]);
+  }, [isOutletScopedUser, assignedOutletId]);
 
   const outletNameMap = useMemo(
     () => new Map(outlets.map((outlet) => [outlet.id, outlet.name])),
@@ -360,18 +377,29 @@ export function Mascots() {
   });
 
   const resolveOutletLabel = (outletId: string) => {
-    if (isSupervisor && userData?.outlet_id === outletId) {
+    if (isOutletScopedUser && assignedOutletId === outletId) {
       return userData.outlet_name || outletId;
     }
 
     return outletNameMap.get(outletId) || outletId;
   };
 
+  const openBookingPanel = () => {
+    if (outletScopedMissingOutlet) {
+      setFeedback({ tone: 'error', message: 'Your profile is missing an assigned outlet. An admin must assign your outlet before you can request mascot bookings.' });
+      return;
+    }
+
+    setFeedback(null);
+    setBookingForm(buildDefaultBookingForm(isOutletScopedUser ? (assignedOutletId || '') : ''));
+    setView('book');
+  };
+
   const handleBookMascot = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!userData?.id || !canRequestMascot) return;
+    if (!currentAppUserId || !canRequestMascot) return;
 
-    const outletId = isSupervisor ? (userData?.outlet_id || '') : bookingForm.outlet_id;
+    const outletId = isOutletScopedUser ? assignedOutletId : toNullableUuid(bookingForm.outlet_id);
     const startAt = new Date(bookingForm.startAt);
     const endAt = new Date(bookingForm.endAt);
 
@@ -396,7 +424,7 @@ export function Mascots() {
     try {
       const { error } = await supabase.from('mascot_bookings').insert({
         outlet_id: outletId,
-        requested_by_user_id: userData.id,
+        requested_by_user_id: currentAppUserId,
         title: bookingForm.title.trim(),
         location: bookingForm.location.trim(),
         request_note: bookingForm.requestNote.trim(),
@@ -413,7 +441,7 @@ export function Mascots() {
 
       setView('default');
       setActiveTab('requests');
-      setBookingForm(buildDefaultBookingForm(isSupervisor ? (userData?.outlet_id || '') : ''));
+      setBookingForm(buildDefaultBookingForm(isOutletScopedUser ? (assignedOutletId || '') : ''));
       setFeedback({ tone: 'success', message: 'Booking request sent.' });
     } catch (error) {
       console.error('Error creating mascot booking request:', error);
@@ -431,7 +459,8 @@ export function Mascots() {
   };
 
   const handleAdminDecisionSave = async () => {
-    if (!userData?.id || !isAdmin || !selectedBooking) return;
+    const bookingId = toNullableUuid(selectedBooking?.id);
+    if (!currentAppUserId || !isAdmin || !selectedBooking || !bookingId) return;
 
     setSubmitting(true);
     setFeedback(null);
@@ -442,10 +471,10 @@ export function Mascots() {
         .update({
           status: adminDecisionStatus,
           admin_note: adminNoteDraft.trim(),
-          approved_by_user_id: adminDecisionStatus === 'pending' ? null : userData.id,
+          approved_by_user_id: adminDecisionStatus === 'pending' ? null : currentAppUserId,
           updated_at: nowIso()
         })
-        .eq('id', selectedBooking.id);
+        .eq('id', bookingId);
 
       if (error) throw error;
 
@@ -464,7 +493,12 @@ export function Mascots() {
 
   const handleLogCondition = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!userData?.id || !canLogCondition) return;
+    if (!currentAppUserId || !canLogCondition) return;
+
+    if (!conditionForm.date || !conditionForm.outletEvent.trim()) {
+      setFeedback({ tone: 'error', message: 'Date and location are required before saving the asset log.' });
+      return;
+    }
 
     try {
       const { error } = await supabase.from('mascot_logs').insert({
@@ -473,7 +507,7 @@ export function Mascots() {
         status: conditionForm.status,
         condition: conditionForm.condition,
         actual_usage_notes: conditionForm.actualUsageNotes.trim(),
-        assigned_pic_user_id: userData.id,
+        assigned_pic_user_id: currentAppUserId,
         created_at: nowIso(),
         updated_at: nowIso()
       });
@@ -511,12 +545,9 @@ export function Mascots() {
           )}
           {canRequestMascot && (
             <button
-              onClick={() => {
-                setFeedback(null);
-                setBookingForm(buildDefaultBookingForm(isSupervisor ? (userData?.outlet_id || '') : ''));
-                setView('book');
-              }}
-              className="flex items-center gap-2 bg-rose-500 hover:bg-rose-600 text-white px-4 py-2 rounded-lg font-medium transition-colors shadow-sm"
+              onClick={openBookingPanel}
+              disabled={outletScopedMissingOutlet}
+              className="flex items-center gap-2 bg-rose-500 hover:bg-rose-600 disabled:bg-rose-300 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg font-medium transition-colors shadow-sm"
             >
               <CalendarIcon size={18} /> Request booking
             </button>
@@ -534,7 +565,7 @@ export function Mascots() {
         </div>
       )}
 
-      {isSupervisor && !userData?.outlet_id && (
+      {outletScopedMissingOutlet && (
         <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
           You need an assigned outlet before you can request mascot bookings.
         </div>
@@ -810,7 +841,7 @@ export function Mascots() {
           </>
         )}
 
-        {((view === 'book' && canRequestMascot) || (view === 'logCondition' && canLogCondition)) && (
+        {((view === 'book' && canRequestMascot && !outletScopedMissingOutlet) || (view === 'logCondition' && canLogCondition)) && (
           <>
             <motion.div
               initial={{ opacity: 0 }}
@@ -928,7 +959,7 @@ export function Mascots() {
                     <button
                       type="submit"
                       form="book-form"
-                      disabled={submitting || (isSupervisor && !userData?.outlet_id)}
+                      disabled={submitting || outletScopedMissingOutlet}
                       className="px-5 py-2 bg-rose-500 hover:bg-rose-600 disabled:bg-rose-300 disabled:cursor-not-allowed text-white font-medium rounded-lg shadow-sm transition-colors flex items-center gap-2"
                     >
                       <CheckCircle size={18} /> {submitting ? 'Submitting...' : 'Send Request'}

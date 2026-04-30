@@ -19,7 +19,7 @@ const navItems: Array<{
   { path: '/partnerships', label: 'Partnerships', icon: <Handshake size={20} />, adminOnly: true },
   { path: '/mall-displays', label: 'Displays', icon: <MonitorPlay size={20} />, allowedRoles: ['admin', 'supervisor', 'pic'] },
   { path: '/events', label: 'Calendar', icon: <Calendar size={20} />, allowedRoles: ['admin', 'supervisor', 'pic'] },
-  { path: '/inbox', label: 'Inbox', icon: <Bell size={20} />, allowedRoles: ['admin', 'supervisor'] },
+  { path: '/inbox', label: 'Inbox', icon: <Bell size={20} />, allowedRoles: ['admin', 'supervisor', 'pic'] },
   { path: '/mascots', label: 'Mascot', icon: <Smile size={20} />, allowedRoles: ['admin', 'supervisor', 'pic'] },
   { path: '/blog', label: 'Blog', icon: <BookOpen size={20} />, adminOnly: true },
   { path: '/delivery', label: 'Delivery', icon: <Truck size={20} /> },

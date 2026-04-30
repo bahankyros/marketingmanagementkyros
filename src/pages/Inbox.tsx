@@ -11,6 +11,7 @@ import {
 import { useNavigate } from 'react-router';
 import { useAuth } from '../lib/AuthContext';
 import { supabase } from '../lib/supabase';
+import { toNullableUuid } from '../lib/supabaseData';
 
 type TaskInboxStatus = 'assigned' | 'in_progress' | 'proof_submitted' | 'approved' | 'rejected' | 'completed';
 type MascotInboxStatus = 'pending' | 'approved' | 'rejected' | 'cancelled';
@@ -22,6 +23,7 @@ type TaskInboxRecord = {
   dueAt: Date | null;
   updatedAt: Date | null;
   assignedToUid: string;
+  outletId: string;
 };
 
 type MascotInboxRecord = {
@@ -45,7 +47,7 @@ type InboxItem = {
   href: '/tasks' | '/mascots';
 };
 
-const SUPERVISOR_MASCOT_VISIBLE_STATUSES: MascotInboxStatus[] = ['approved', 'rejected', 'cancelled'];
+const OUTLET_MASCOT_VISIBLE_STATUSES: MascotInboxStatus[] = ['approved', 'rejected', 'cancelled'];
 
 function inboxStatusTone(status: string) {
   switch (status) {
@@ -87,7 +89,8 @@ function normalizeTaskInbox(row: any): TaskInboxRecord {
     status: (row.status as TaskInboxStatus) || 'assigned',
     dueAt: normalizeDate(row.due_at),
     updatedAt: normalizeDate(row.updated_at),
-    assignedToUid: typeof row.assigned_to_user_id === 'string' ? row.assigned_to_user_id : ''
+    assignedToUid: typeof row.assigned_to_user_id === 'string' ? row.assigned_to_user_id : '',
+    outletId: typeof row.outlet_id === 'string' ? row.outlet_id : ''
   };
 }
 
@@ -108,8 +111,11 @@ export function Inbox() {
   const { user, userData } = useAuth();
   const role = userData?.role;
   const isAdmin = role === 'admin';
-  const isSupervisor = role === 'supervisor';
-  const canUseInbox = isAdmin || isSupervisor;
+  const isOutletScopedUser = role === 'supervisor' || role === 'pic';
+  const canUseInbox = isAdmin || isOutletScopedUser;
+  const currentAppUserId = toNullableUuid(userData?.id);
+  const assignedOutletId = toNullableUuid(userData?.outlet_id);
+  const outletScopedMissingOutlet = isOutletScopedUser && !assignedOutletId;
 
   const [taskItems, setTaskItems] = useState<TaskInboxRecord[]>([]);
   const [bookingItems, setBookingItems] = useState<MascotInboxRecord[]>([]);
@@ -127,7 +133,8 @@ export function Inbox() {
 
     try {
       const persisted = window.localStorage.getItem(readStorageKey);
-      setReadIds(persisted ? JSON.parse(persisted) : []);
+      const parsed = persisted ? JSON.parse(persisted) : [];
+      setReadIds(Array.isArray(parsed) ? parsed.filter((item) => typeof item === 'string') : []);
     } catch (error) {
       console.error('Error loading inbox read state:', error);
       setReadIds([]);
@@ -135,13 +142,13 @@ export function Inbox() {
   }, [readStorageKey]);
 
   useEffect(() => {
-    if (!user || !canUseInbox) {
+    if (!user || !userData || !canUseInbox || !currentAppUserId) {
       setTaskItems([]);
       setLoadingTasks(false);
       return;
     }
 
-    if (!isAdmin && !userData?.id) {
+    if (outletScopedMissingOutlet) {
       setTaskItems([]);
       setLoadingTasks(false);
       return;
@@ -154,13 +161,16 @@ export function Inbox() {
 
       let request = supabase
         .from('tasks')
-        .select('id, title, status, due_at, updated_at, assigned_to_user_id')
-        .order('updated_at', { ascending: false });
+        .select('id, title, status, due_at, updated_at, assigned_to_user_id, outlet_id')
+        .order('updated_at', { ascending: false })
+        .limit(100);
 
       if (isAdmin) {
         request = request.eq('status', 'proof_submitted');
       } else {
-        request = request.eq('assigned_to_user_id', userData.id);
+        request = request
+          .eq('assigned_to_user_id', currentAppUserId)
+          .eq('outlet_id', assignedOutletId || '');
       }
 
       const { data, error } = await request;
@@ -195,16 +205,16 @@ export function Inbox() {
       isMounted = false;
       void supabase.removeChannel(channel);
     };
-  }, [user, userData?.id, canUseInbox, isAdmin]);
+  }, [user, userData, canUseInbox, currentAppUserId, assignedOutletId, outletScopedMissingOutlet, isAdmin]);
 
   useEffect(() => {
-    if (!user || !canUseInbox) {
+    if (!user || !userData || !canUseInbox || !currentAppUserId) {
       setBookingItems([]);
       setLoadingBookings(false);
       return;
     }
 
-    if (isSupervisor && !userData?.outlet_id) {
+    if (outletScopedMissingOutlet) {
       setBookingItems([]);
       setLoadingBookings(false);
       return;
@@ -218,12 +228,15 @@ export function Inbox() {
       let request = supabase
         .from('mascot_bookings')
         .select('id, title, location, status, outlet_id, updated_at, start_at')
-        .order('updated_at', { ascending: false });
+        .order('updated_at', { ascending: false })
+        .limit(100);
 
       if (isAdmin) {
         request = request.eq('status', 'pending');
       } else {
-        request = request.eq('outlet_id', userData?.outlet_id || '');
+        request = request
+          .eq('outlet_id', assignedOutletId || '')
+          .in('status', OUTLET_MASCOT_VISIBLE_STATUSES);
       }
 
       const { data, error } = await request;
@@ -239,7 +252,6 @@ export function Inbox() {
 
       const normalized = (data || [])
         .map(normalizeMascotInbox)
-        .filter((booking) => isAdmin || SUPERVISOR_MASCOT_VISIBLE_STATUSES.includes(booking.status))
         .sort((left, right) => (right.updatedAt?.getTime() || 0) - (left.updatedAt?.getTime() || 0));
 
       setBookingItems(normalized);
@@ -259,7 +271,7 @@ export function Inbox() {
       isMounted = false;
       void supabase.removeChannel(channel);
     };
-  }, [user, userData?.outlet_id, canUseInbox, isAdmin, isSupervisor]);
+  }, [user, userData, canUseInbox, currentAppUserId, assignedOutletId, outletScopedMissingOutlet, isAdmin]);
 
   const inboxItems = useMemo(() => {
     const taskInboxItems = taskItems.map((task) => ({
@@ -314,7 +326,7 @@ export function Inbox() {
       <div className="space-y-6 pb-12">
         <header>
           <h1 className="text-3xl font-bold tracking-tight text-neutral-900">Inbox</h1>
-          <p className="mt-1 text-neutral-500">Inbox is for admins and supervisors only.</p>
+          <p className="mt-1 text-neutral-500">Inbox is for admins, supervisors, and PICs only.</p>
         </header>
       </div>
     );
@@ -337,6 +349,12 @@ export function Inbox() {
           Mark all read
         </button>
       </header>
+
+      {outletScopedMissingOutlet && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800">
+          Your profile is missing an assigned outlet. An admin must assign your outlet before inbox alerts can load.
+        </div>
+      )}
 
       <motion.div
         initial={{ opacity: 0, y: 10 }}

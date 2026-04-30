@@ -131,7 +131,7 @@ export default function App() {
             <Route
               path="inbox"
               element={
-                <RoleGuard allowedRoles={['admin', 'supervisor']}>
+                <RoleGuard allowedRoles={['admin', 'supervisor', 'pic']}>
                   <Inbox />
                 </RoleGuard>
               }

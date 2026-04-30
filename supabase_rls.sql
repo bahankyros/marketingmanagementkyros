@@ -567,6 +567,216 @@ begin
 end;
 $$;
 
+create or replace function public.create_notification(
+  p_recipient_user_id uuid,
+  p_actor_user_id uuid,
+  p_entity_type text,
+  p_entity_id uuid,
+  p_type text,
+  p_title text,
+  p_body text default ''
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if p_recipient_user_id is null
+    or p_entity_id is null
+    or p_title is null
+    or btrim(p_title) = ''
+  then
+    return;
+  end if;
+
+  insert into public.notifications (
+    recipient_user_id,
+    actor_user_id,
+    entity_type,
+    entity_id,
+    type,
+    title,
+    body,
+    created_at
+  )
+  values (
+    p_recipient_user_id,
+    p_actor_user_id,
+    p_entity_type,
+    p_entity_id,
+    p_type,
+    btrim(p_title),
+    coalesce(p_body, ''),
+    now()
+  );
+end;
+$$;
+
+create or replace function public.notify_task_changes()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor_user_id uuid;
+  admin_profile record;
+  notification_type text;
+begin
+  actor_user_id := coalesce((select public.current_app_user_id()), new.assigned_by_user_id);
+
+  if TG_OP = 'INSERT' then
+    perform public.create_notification(
+      new.assigned_to_user_id,
+      actor_user_id,
+      'task',
+      new.id,
+      'task_assigned',
+      'Task assigned: ' || new.title,
+      'A task has been assigned to you.'
+    );
+
+    return new;
+  end if;
+
+  if TG_OP = 'UPDATE' and old.status is distinct from new.status then
+    if new.status = 'proof_submitted' then
+      for admin_profile in
+        select u.id
+        from public.users u
+        where u.role = 'admin'
+          and u.status = 'active'
+      loop
+        perform public.create_notification(
+          admin_profile.id,
+          coalesce(actor_user_id, new.assigned_to_user_id),
+          'task',
+          new.id,
+          'task_proof_submitted',
+          'Task proof submitted: ' || new.title,
+          'Proof is ready for admin review.'
+        );
+      end loop;
+    elsif new.status in ('approved', 'rejected', 'completed') then
+      notification_type := 'task_' || new.status;
+
+      perform public.create_notification(
+        new.assigned_to_user_id,
+        actor_user_id,
+        'task',
+        new.id,
+        notification_type,
+        'Task ' || replace(new.status, '_', ' ') || ': ' || new.title,
+        'Task status changed to ' || replace(new.status, '_', ' ') || '.'
+      );
+    end if;
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists tasks_notify_changes on public.tasks;
+create trigger tasks_notify_changes
+  after insert or update of status on public.tasks
+  for each row
+  execute function public.notify_task_changes();
+
+create or replace function public.notify_mascot_booking_changes()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor_user_id uuid;
+  admin_profile record;
+  notification_type text;
+begin
+  actor_user_id := coalesce((select public.current_app_user_id()), new.requested_by_user_id, new.approved_by_user_id);
+
+  if TG_OP = 'INSERT' then
+    for admin_profile in
+      select u.id
+      from public.users u
+      where u.role = 'admin'
+        and u.status = 'active'
+    loop
+      perform public.create_notification(
+        admin_profile.id,
+        new.requested_by_user_id,
+        'mascot_booking',
+        new.id,
+        'mascot_booking_requested',
+        'Mascot booking requested: ' || new.title,
+        coalesce(new.location, '')
+      );
+    end loop;
+
+    return new;
+  end if;
+
+  if TG_OP = 'UPDATE'
+    and old.status is distinct from new.status
+    and new.status in ('approved', 'rejected', 'cancelled')
+  then
+    notification_type := 'mascot_booking_' || new.status;
+
+    perform public.create_notification(
+      new.requested_by_user_id,
+      actor_user_id,
+      'mascot_booking',
+      new.id,
+      notification_type,
+      'Mascot booking ' || new.status || ': ' || new.title,
+      coalesce(new.admin_note, new.location, '')
+    );
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists mascot_bookings_notify_changes on public.mascot_bookings;
+create trigger mascot_bookings_notify_changes
+  after insert or update of status on public.mascot_bookings
+  for each row
+  execute function public.notify_mascot_booking_changes();
+
+create or replace function public.mark_notification_read(p_notification_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  update public.notifications
+  set read_at = coalesce(read_at, now())
+  where id = p_notification_id
+    and recipient_user_id = (select public.current_app_user_id());
+end;
+$$;
+
+create or replace function public.mark_all_notifications_read()
+returns integer
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  updated_count integer;
+begin
+  update public.notifications
+  set read_at = coalesce(read_at, now())
+  where recipient_user_id = (select public.current_app_user_id())
+    and read_at is null;
+
+  get diagnostics updated_count = row_count;
+  return updated_count;
+end;
+$$;
+
 revoke all on function public.current_app_user_id() from public;
 revoke all on function public.current_app_user_outlet_id() from public;
 revoke all on function public.is_active_app_user() from public;
@@ -585,6 +795,11 @@ revoke all on function public.can_access_mall_display_proof_storage(text) from p
 revoke all on function public.can_access_campaign(uuid) from public;
 revoke all on function public.can_update_campaign(uuid) from public;
 revoke all on function public.import_sales_budget(jsonb, text, text) from public;
+revoke all on function public.create_notification(uuid, uuid, text, uuid, text, text, text) from public;
+revoke all on function public.notify_task_changes() from public;
+revoke all on function public.notify_mascot_booking_changes() from public;
+revoke all on function public.mark_notification_read(uuid) from public;
+revoke all on function public.mark_all_notifications_read() from public;
 
 grant execute on function public.current_app_user_id() to authenticated;
 grant execute on function public.current_app_user_outlet_id() to authenticated;
@@ -604,6 +819,8 @@ grant execute on function public.can_access_mall_display_proof_storage(text) to 
 grant execute on function public.can_access_campaign(uuid) to authenticated;
 grant execute on function public.can_update_campaign(uuid) to authenticated;
 grant execute on function public.import_sales_budget(jsonb, text, text) to authenticated;
+grant execute on function public.mark_notification_read(uuid) to authenticated;
+grant execute on function public.mark_all_notifications_read() to authenticated;
 
 -- Supabase Storage buckets
 insert into storage.buckets (id, name, public)
@@ -888,10 +1105,8 @@ create policy "mascot_bookings_outlet_select" on public.mascot_bookings
 create policy "mascot_bookings_outlet_insert" on public.mascot_bookings
   for insert to authenticated
   with check ((select public.owns_outlet(outlet_id)) and (select public.is_current_app_user(requested_by_user_id)));
-create policy "mascot_bookings_outlet_update" on public.mascot_bookings
-  for update to authenticated
-  using ((select public.owns_outlet(outlet_id)) or (select public.is_current_app_user(requested_by_user_id)))
-  with check ((select public.owns_outlet(outlet_id)) or (select public.is_current_app_user(requested_by_user_id)));
+-- Non-admin users may create outlet-scoped booking requests, but admin approval
+-- and status changes are intentionally handled by the admin-all policy only.
 
 -- public.mascot_logs
 alter table public.mascot_logs enable row level security;
@@ -934,6 +1149,18 @@ create policy "mascot_schedule_outlet_update" on public.mascot_schedule
   for update to authenticated
   using ((select public.owns_outlet(outlet_id)))
   with check ((select public.owns_outlet(outlet_id)));
+
+-- public.notifications
+alter table public.notifications enable row level security;
+drop policy if exists "notifications_admin_all" on public.notifications;
+drop policy if exists "notifications_recipient_select" on public.notifications;
+create policy "notifications_admin_all" on public.notifications
+  for all to authenticated
+  using ((select public.is_admin()))
+  with check ((select public.is_admin()));
+create policy "notifications_recipient_select" on public.notifications
+  for select to authenticated
+  using ((select public.is_current_app_user(recipient_user_id)));
 
 -- public.blog_outreach
 alter table public.blog_outreach enable row level security;

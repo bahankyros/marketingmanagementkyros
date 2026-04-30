@@ -232,6 +232,29 @@ create table public.mascot_schedule (
   updated_at timestamp with time zone not null default now()
 );
 
+create table public.notifications (
+  id uuid default gen_random_uuid() primary key,
+  recipient_user_id uuid not null references public.users(id) on delete cascade,
+  actor_user_id uuid references public.users(id) on delete set null,
+  entity_type text not null check (entity_type in ('task', 'mascot_booking')),
+  entity_id uuid not null,
+  type text not null check (type in (
+    'task_assigned',
+    'task_proof_submitted',
+    'task_approved',
+    'task_rejected',
+    'task_completed',
+    'mascot_booking_requested',
+    'mascot_booking_approved',
+    'mascot_booking_rejected',
+    'mascot_booking_cancelled'
+  )),
+  title text not null,
+  body text not null default '',
+  read_at timestamp with time zone,
+  created_at timestamp with time zone not null default now()
+);
+
 create table public.blog_outreach (
   id uuid default gen_random_uuid() primary key,
   domain text not null,
@@ -424,6 +447,9 @@ create index if not exists mascot_bookings_approved_by_user_id_idx on public.mas
 create index if not exists mascot_bookings_start_at_idx on public.mascot_bookings(start_at);
 create index if not exists mascot_logs_assigned_pic_user_id_idx on public.mascot_logs(assigned_pic_user_id);
 create index if not exists mascot_schedule_outlet_id_idx on public.mascot_schedule(outlet_id);
+create index if not exists notifications_recipient_user_id_created_at_idx on public.notifications(recipient_user_id, created_at desc);
+create index if not exists notifications_unread_recipient_user_id_idx on public.notifications(recipient_user_id) where read_at is null;
+create index if not exists notifications_entity_idx on public.notifications(entity_type, entity_id);
 create index if not exists blog_outreach_pic_user_id_idx on public.blog_outreach(pic_user_id);
 create index if not exists delivery_promos_campaign_id_idx on public.delivery_promos(campaign_id);
 create index if not exists delivery_promos_pic_user_id_idx on public.delivery_promos(pic_user_id);
