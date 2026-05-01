@@ -301,10 +301,10 @@ export function Events() {
   const { user, userData } = useAuth();
   const { campaigns } = useCampaigns();
   const role = userData?.role;
-  const isAdmin = role === 'admin';
-  const isPic = role === 'pic';
-  const canManageEvents = isAdmin || isPic;
-  const isOutletScopedEventUser = role === 'supervisor' || role === 'pic';
+  const normalizedRole = typeof role === 'string' ? role.trim().toLowerCase() : '';
+  const isAdmin = normalizedRole === 'admin';
+  const isOutletScopedEventUser = normalizedRole === 'supervisor' || normalizedRole === 'pic';
+  const canManageEvents = isAdmin || isOutletScopedEventUser;
   const canViewEvents = isAdmin || isOutletScopedEventUser;
   const canSeeLinkedTasks = isAdmin || isOutletScopedEventUser;
 
@@ -638,7 +638,7 @@ export function Events() {
       return;
     }
 
-    const actorLabel = isPic ? 'PIC' : 'Admin';
+    const actorLabel = isAdmin ? 'Admin' : 'PIC';
     const verb = actionType === 'created' ? 'added' : 'updated';
     const description = `${actorLabel} ${verb} event ${eventName.trim()}`;
 
