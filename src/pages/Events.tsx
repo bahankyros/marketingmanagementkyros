@@ -78,6 +78,17 @@ type LinkedTaskRecord = {
   dueAt: Date | null;
 };
 
+type EventHistoryActionType = 'created' | 'updated';
+
+type EventHistoryLogRecord = {
+  id: string;
+  eventId: string;
+  actorUserId: string;
+  actionType: string;
+  description: string;
+  createdAt: Date | null;
+};
+
 type FeedbackState = {
   tone: 'success' | 'error';
   message: string;
@@ -248,6 +259,27 @@ function normalizeLinkedTask(row: any): LinkedTaskRecord {
   };
 }
 
+function normalizeEventHistoryLog(row: any): EventHistoryLogRecord {
+  return {
+    id: typeof row.id === 'string' ? row.id : '',
+    eventId: typeof row.event_id === 'string' ? row.event_id : '',
+    actorUserId: typeof row.actor_user_id === 'string' ? row.actor_user_id : '',
+    actionType: typeof row.action_type === 'string' ? row.action_type : '',
+    description: typeof row.description === 'string' ? row.description : '',
+    createdAt: parseEventDate(row.created_at)
+  };
+}
+
+function formatHistoryTime(date: Date | null) {
+  if (!date) return 'Time not recorded';
+  return date.toLocaleString(undefined, {
+    day: 'numeric',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+}
+
 function linkedTaskStatusTone(status: LinkedTaskStatus) {
   switch (status) {
     case 'completed':
@@ -269,13 +301,16 @@ export function Events() {
   const { user, userData } = useAuth();
   const { campaigns } = useCampaigns();
   const role = userData?.role;
-  const canManageEvents = role === 'admin';
+  const isAdmin = role === 'admin';
+  const isPic = role === 'pic';
+  const canManageEvents = isAdmin || isPic;
   const isOutletScopedEventUser = role === 'supervisor' || role === 'pic';
-  const canViewEvents = canManageEvents || isOutletScopedEventUser;
-  const canSeeLinkedTasks = canManageEvents || isOutletScopedEventUser;
+  const canViewEvents = isAdmin || isOutletScopedEventUser;
+  const canSeeLinkedTasks = isAdmin || isOutletScopedEventUser;
 
   const [events, setEvents] = useState<EventRecord[]>([]);
   const [linkedTasks, setLinkedTasks] = useState<LinkedTaskRecord[]>([]);
+  const [historyLogs, setHistoryLogs] = useState<EventHistoryLogRecord[]>([]);
   const [outlets, setOutlets] = useState<OutletOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [currentMonth, setCurrentMonth] = useState(() => startOfMonth(new Date()));
@@ -487,6 +522,54 @@ export function Events() {
     };
   }, [user, userData?.outlet_id, isOutletScopedEventUser, canSeeLinkedTasks]);
 
+  useEffect(() => {
+    const selectedEventId = editorState?.id || '';
+
+    if (!user || !canViewEvents || !selectedEventId) {
+      setHistoryLogs([]);
+      return;
+    }
+
+    let isMounted = true;
+
+    const loadHistoryLogs = async () => {
+      const { data, error } = await supabase
+        .from('event_history_logs')
+        .select('id, event_id, actor_user_id, action_type, description, created_at')
+        .eq('event_id', selectedEventId)
+        .order('created_at', { ascending: false })
+        .limit(25);
+
+      if (!isMounted) return;
+
+      if (error) {
+        console.error('Error fetching event history logs:', error);
+        setHistoryLogs([]);
+        return;
+      }
+
+      setHistoryLogs((data || []).map(normalizeEventHistoryLog));
+    };
+
+    void loadHistoryLogs();
+
+    const channel = supabase
+      .channel(`core-ops-event-history-${selectedEventId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'event_history_logs', filter: `event_id=eq.${selectedEventId}` },
+        () => {
+          void loadHistoryLogs();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      isMounted = false;
+      void supabase.removeChannel(channel);
+    };
+  }, [user, canViewEvents, editorState?.id]);
+
   const calendarDays = useMemo(() => {
     const monthStart = startOfMonth(currentMonth);
     const gridStart = new Date(monthStart);
@@ -499,9 +582,26 @@ export function Events() {
     });
   }, [currentMonth]);
 
-  const eventsForSelectedDate = useMemo(
-    () => events.filter((event) => isSameDay(event.startAt, selectedDate)),
-    [events, selectedDate]
+  const assignedOutlet = useMemo<OutletOption | undefined>(() => {
+    if (!userData?.outlet_id) return undefined;
+
+    const loadedOutlet = outlets.find((outlet) => outlet.id === userData.outlet_id);
+    if (loadedOutlet) return loadedOutlet;
+
+    return {
+      id: userData.outlet_id,
+      name: userData.outlet_name || userData.outlet || userData.outlet_id
+    };
+  }, [outlets, userData?.outlet, userData?.outlet_id, userData?.outlet_name]);
+
+  const defaultOutletForNewEvent = isOutletScopedEventUser ? assignedOutlet : outlets[0];
+
+  const eventsForCurrentMonth = useMemo(
+    () => events.filter((event) => (
+      event.startAt.getFullYear() === currentMonth.getFullYear() &&
+      event.startAt.getMonth() === currentMonth.getMonth()
+    )),
+    [events, currentMonth]
   );
 
   const linkedTaskCountByEventId = useMemo(() => {
@@ -526,10 +626,42 @@ export function Events() {
       });
   }, [editorState?.id, linkedTasks, canSeeLinkedTasks]);
 
+  const writeEventHistoryLog = async (
+    eventId: string,
+    actionType: EventHistoryActionType,
+    eventName: string
+  ) => {
+    const safeEventId = toNullableUuid(eventId);
+    const currentAppUserId = toNullableUuid(userData?.id || '');
+
+    if (!safeEventId || !currentAppUserId) {
+      return;
+    }
+
+    const actorLabel = isPic ? 'PIC' : 'Admin';
+    const verb = actionType === 'created' ? 'added' : 'updated';
+    const description = `${actorLabel} ${verb} event ${eventName.trim()}`;
+
+    const { error } = await supabase.from('event_history_logs').insert({
+      event_id: safeEventId,
+      actor_user_id: currentAppUserId,
+      action_type: actionType,
+      description,
+      created_at: nowIso()
+    });
+
+    if (error) throw error;
+  };
+
   const openCreateEvent = (baseDate?: Date) => {
     if (!canManageEvents) return;
+    if (!defaultOutletForNewEvent?.id) {
+      setFeedback({ tone: 'error', message: 'An assigned outlet is required before creating an event.' });
+      return;
+    }
+
     setFeedback(null);
-    setEditorState(buildEmptyEditor(baseDate, outlets[0]));
+    setEditorState(buildEmptyEditor(baseDate, defaultOutletForNewEvent));
   };
 
   const openExistingEvent = (event: EventRecord) => {
@@ -568,11 +700,15 @@ export function Events() {
 
     const startDate = new Date(editorState.startAt);
     const endDate = new Date(editorState.endAt);
+    const currentAppUserId = toNullableUuid(userData.id);
+    const selectedOutletId = isOutletScopedEventUser ? userData.outlet_id : editorState.outletId;
+    const outletId = toNullableUuid(selectedOutletId || '');
 
     if (
       !editorState.eventName.trim() ||
       !editorState.organizer.trim() ||
-      !editorState.outletId ||
+      !outletId ||
+      !currentAppUserId ||
       Number.isNaN(startDate.getTime()) ||
       Number.isNaN(endDate.getTime()) ||
       endDate <= startDate
@@ -581,7 +717,7 @@ export function Events() {
       return;
     }
 
-    const selectedOutlet = outlets.find((outlet) => outlet.id === editorState.outletId) || null;
+    const selectedOutlet = outlets.find((outlet) => outlet.id === outletId) || assignedOutlet || null;
     const outletName = selectedOutlet?.name || editorState.outlet.trim();
     if (!outletName) {
       setFeedback({ tone: 'error', message: 'A valid outlet is required.' });
@@ -591,11 +727,11 @@ export function Events() {
     const payload = {
       event_name: editorState.eventName.trim(),
       organizer: editorState.organizer.trim(),
-      outlet_id: editorState.outletId,
+      outlet_id: outletId,
       outlet_name: outletName,
       type: editorState.type.trim() || 'Internal',
       campaign_id: toNullableUuid(editorState.campaignId),
-      decision_status: editorState.decisionStatus,
+      decision_status: isAdmin ? editorState.decisionStatus : editorState.id ? editorState.decisionStatus : 'Proposed',
       assigned_pic: editorState.assignedPic.trim(),
       actual_attendance: Number(editorState.actualAttendance) || 0,
       sales_generated: Number(editorState.salesGenerated) || 0,
@@ -611,6 +747,9 @@ export function Events() {
 
     setSubmitting(true);
     try {
+      let savedEventId = editorState.id || '';
+      let actionType: EventHistoryActionType = 'updated';
+
       if (editorState.id) {
         const { error } = await supabase
           .from('events')
@@ -619,17 +758,35 @@ export function Events() {
 
         if (error) throw error;
       } else {
-        const { error } = await supabase.from('events').insert({
-          ...payload,
-          submitter_user_id: userData.id,
-          created_at: nowIso()
-        });
+        const { data, error } = await supabase
+          .from('events')
+          .insert({
+            ...payload,
+            submitter_user_id: currentAppUserId,
+            created_at: nowIso()
+          })
+          .select('id')
+          .single();
 
         if (error) throw error;
+        savedEventId = typeof data?.id === 'string' ? data.id : '';
+        actionType = 'created';
+      }
+
+      let historyError: unknown = null;
+      if (savedEventId) {
+        try {
+          await writeEventHistoryLog(savedEventId, actionType, payload.event_name);
+        } catch (error) {
+          historyError = error;
+          console.error('Error writing event history log:', error);
+        }
       }
 
       setEditorState(null);
-      setFeedback({ tone: 'success', message: 'Event saved.' });
+      setFeedback(historyError
+        ? { tone: 'error', message: 'Event saved, but the activity log failed. Check event_history_logs RLS.' }
+        : { tone: 'success', message: 'Event saved.' });
     } catch (error) {
       console.error('Error saving event:', error);
       setFeedback({ tone: 'error', message: 'Event save failed.' });
@@ -652,7 +809,7 @@ export function Events() {
             className="inline-flex items-center gap-2 rounded-lg bg-emerald-500 px-4 py-2 font-medium text-white shadow-sm transition-colors hover:bg-emerald-600"
           >
             <Plus size={18} />
-            Add Event
+            New Event
           </button>
         ) : (
           <div className="rounded-lg border border-neutral-200 bg-white px-4 py-2 text-sm font-medium text-neutral-500">
@@ -684,7 +841,7 @@ export function Events() {
                 {currentMonth.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}
               </h2>
               <p className="mt-1 text-sm text-neutral-500">
-                Admins can edit. Outlet teams can view.
+                Admins can manage events. PICs can submit outlet activity.
               </p>
             </div>
             <div className="flex items-center gap-2">
@@ -792,9 +949,11 @@ export function Events() {
           <div className="mb-5 flex items-center justify-between">
             <div>
               <h2 className="text-lg font-bold text-neutral-900">
-                {selectedDate.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })}
+                Events this month
               </h2>
-              <p className="mt-1 text-sm text-neutral-500">Events scheduled for the selected day.</p>
+              <p className="mt-1 text-sm text-neutral-500">
+                {currentMonth.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })} scheduled activity.
+              </p>
             </div>
             {canManageEvents && (
               <button
@@ -802,24 +961,24 @@ export function Events() {
                 onClick={() => openCreateEvent(selectedDate)}
                 className="rounded-lg border border-neutral-200 px-3 py-2 text-sm font-medium text-neutral-700 transition-colors hover:bg-neutral-50"
               >
-                Add on Day
+                New Event
               </button>
             )}
           </div>
 
           <div className="space-y-4">
-            {eventsForSelectedDate.length === 0 ? (
+            {eventsForCurrentMonth.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-neutral-200 bg-neutral-50 p-8 text-center">
                 <Calendar className="mx-auto h-10 w-10 text-neutral-300 mb-4" />
-                <p className="text-sm font-medium text-neutral-900">No events on this day</p>
+                <p className="text-sm font-medium text-neutral-900">No events this month</p>
                 <p className="mt-2 text-sm text-neutral-500">
                   {canManageEvents
-                    ? 'Use Add on Day to create a new event with start and end times.'
-                    : 'Admins can add event records to this calendar.'}
+                    ? 'Use New Event to create outlet activity with start and end times.'
+                    : 'Admins and PICs can add event records to this calendar.'}
                 </p>
               </div>
             ) : (
-              eventsForSelectedDate.map((evt) => (
+              eventsForCurrentMonth.map((evt) => (
                 <button
                   key={evt.id}
                   type="button"
@@ -848,7 +1007,7 @@ export function Events() {
                   <div className="mt-4 space-y-2 text-sm text-neutral-500">
                     <p className="flex items-center gap-2">
                       <Clock3 className="w-4 h-4" />
-                      {evt.startAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} - {evt.endAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      {evt.startAt.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })} - {evt.startAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} to {evt.endAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </p>
                     <p className="flex items-center gap-2">
                       <MapPin className="w-4 h-4" />
@@ -892,7 +1051,7 @@ export function Events() {
               <div className="px-6 py-4 border-b border-neutral-100 flex items-center justify-between bg-neutral-50">
                 <div>
                   <h3 className="font-bold text-neutral-900 text-lg">
-                    {editorState.id ? (canManageEvents ? 'Edit Event' : 'Event Details') : 'Add Event'}
+                    {editorState.id ? (canManageEvents ? 'Edit Event' : 'Event Details') : 'New Event'}
                   </h3>
                   <p className="text-sm text-neutral-500 font-mono mt-0.5">
                     {editorState.eventName || 'Event record'}
@@ -945,10 +1104,15 @@ export function Events() {
                             outlet: selectedOutlet?.name || ''
                           });
                         }}
-                        disabled={!canManageEvents}
+                        disabled={!canManageEvents || isOutletScopedEventUser}
                         className="w-full p-2.5 bg-neutral-50 border border-neutral-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500 disabled:bg-neutral-100 disabled:text-neutral-500"
                       >
                         <option value="">Select outlet</option>
+                        {editorState.outletId && !outlets.some((outlet) => outlet.id === editorState.outletId) && (
+                          <option value={editorState.outletId}>
+                            {editorState.outlet || userData?.outlet_name || editorState.outletId}
+                          </option>
+                        )}
                         {outlets.map((outlet) => (
                           <option key={outlet.id} value={outlet.id}>{outlet.name}</option>
                         ))}
@@ -1011,7 +1175,7 @@ export function Events() {
                     <select
                       value={editorState.decisionStatus}
                       onChange={e => setEditorState({ ...editorState, decisionStatus: e.target.value as EventDecisionStatus })}
-                      disabled={!canManageEvents}
+                      disabled={!isAdmin}
                       className="w-full p-2.5 bg-neutral-50 border border-neutral-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500 disabled:bg-neutral-100 disabled:text-neutral-500"
                     >
                       <option value="Proposed">Proposed</option>
@@ -1118,6 +1282,39 @@ export function Events() {
                                   {task.status.replace('_', ' ')}
                                 </span>
                               </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {editorState.id && (
+                    <div className="space-y-3 rounded-2xl border border-neutral-100 bg-white p-4">
+                      <div>
+                        <p className="text-sm font-medium text-neutral-900">Recent Activity</p>
+                        <p className="mt-1 text-sm text-neutral-500">
+                          Latest changes for this event.
+                        </p>
+                      </div>
+
+                      {historyLogs.length === 0 ? (
+                        <div className="rounded-xl border border-dashed border-neutral-200 bg-neutral-50 p-4 text-sm text-neutral-500">
+                          No activity recorded yet.
+                        </div>
+                      ) : (
+                        <div className="space-y-3">
+                          {historyLogs.map((log) => (
+                            <div key={log.id} className="rounded-xl border border-neutral-200 bg-neutral-50 p-4">
+                              <div className="flex items-start justify-between gap-3">
+                                <p className="text-sm font-medium text-neutral-900">{log.description || 'Activity recorded'}</p>
+                                <span className="rounded-full bg-neutral-200 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-neutral-700">
+                                  {log.actionType || 'activity'}
+                                </span>
+                              </div>
+                              <p className="mt-2 text-xs font-medium text-neutral-500">
+                                {formatHistoryTime(log.createdAt)}
+                              </p>
                             </div>
                           ))}
                         </div>
