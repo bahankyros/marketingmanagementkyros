@@ -311,6 +311,7 @@ export function Events() {
   const [events, setEvents] = useState<EventRecord[]>([]);
   const [linkedTasks, setLinkedTasks] = useState<LinkedTaskRecord[]>([]);
   const [historyLogs, setHistoryLogs] = useState<EventHistoryLogRecord[]>([]);
+  const [historyLogError, setHistoryLogError] = useState('');
   const [outlets, setOutlets] = useState<OutletOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [currentMonth, setCurrentMonth] = useState(() => startOfMonth(new Date()));
@@ -527,6 +528,7 @@ export function Events() {
 
     if (!user || !canViewEvents || !selectedEventId) {
       setHistoryLogs([]);
+      setHistoryLogError('');
       return;
     }
 
@@ -544,10 +546,12 @@ export function Events() {
 
       if (error) {
         console.error('Error fetching event history logs:', error);
+        setHistoryLogError('Activity log failed to load. Check event_history_logs RLS.');
         setHistoryLogs([]);
         return;
       }
 
+      setHistoryLogError('');
       setHistoryLogs((data || []).map(normalizeEventHistoryLog));
     };
 
@@ -777,9 +781,11 @@ export function Events() {
       if (savedEventId) {
         try {
           await writeEventHistoryLog(savedEventId, actionType, payload.event_name);
+          setHistoryLogError('');
         } catch (error) {
           historyError = error;
           console.error('Error writing event history log:', error);
+          setHistoryLogError('Activity log failed to save. Check event_history_logs RLS.');
         }
       }
 
@@ -1298,7 +1304,11 @@ export function Events() {
                         </p>
                       </div>
 
-                      {historyLogs.length === 0 ? (
+                      {historyLogError ? (
+                        <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm font-medium text-rose-700">
+                          {historyLogError}
+                        </div>
+                      ) : historyLogs.length === 0 ? (
                         <div className="rounded-xl border border-dashed border-neutral-200 bg-neutral-50 p-4 text-sm text-neutral-500">
                           No activity recorded yet.
                         </div>

@@ -160,6 +160,15 @@ create table public.events (
   check (end_at > start_at)
 );
 
+create table public.event_history_logs (
+  id uuid default gen_random_uuid() primary key,
+  event_id uuid not null references public.events(id) on delete cascade,
+  actor_user_id uuid references public.users(id) on delete set null,
+  action_type text not null check (action_type in ('created', 'updated')),
+  description text not null default '',
+  created_at timestamp with time zone not null default now()
+);
+
 create table public.tasks (
   id uuid default gen_random_uuid() primary key,
   title text not null,
@@ -435,6 +444,8 @@ create index if not exists events_campaign_id_idx on public.events(campaign_id);
 create index if not exists events_outlet_id_idx on public.events(outlet_id);
 create index if not exists events_submitter_user_id_idx on public.events(submitter_user_id);
 create index if not exists events_start_at_idx on public.events(start_at);
+create index if not exists event_history_logs_event_id_created_at_idx on public.event_history_logs(event_id, created_at desc);
+create index if not exists event_history_logs_actor_user_id_idx on public.event_history_logs(actor_user_id);
 create index if not exists tasks_outlet_id_idx on public.tasks(outlet_id);
 create index if not exists tasks_assigned_by_user_id_idx on public.tasks(assigned_by_user_id);
 create index if not exists tasks_assigned_to_user_id_idx on public.tasks(assigned_to_user_id);

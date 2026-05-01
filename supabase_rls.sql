@@ -207,6 +207,26 @@ as $$
   )
 $$;
 
+create or replace function public.can_access_event(target_event_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select target_event_id is not null
+    and exists (
+      select 1
+      from public.events e
+      where e.id = target_event_id
+        and (
+          (select public.is_admin())
+          or (select public.owns_outlet(e.outlet_id))
+          or (select public.is_current_app_user(e.submitter_user_id))
+        )
+    )
+$$;
+
 create or replace function public.can_access_task_proof_storage(object_name text)
 returns boolean
 language sql
@@ -788,6 +808,7 @@ revoke all on function public.owns_merchant(text) from public;
 revoke all on function public.storage_path_uuid(text, integer) from public;
 revoke all on function public.storage_path_segment(text, integer) from public;
 revoke all on function public.can_access_event_proof_storage(text) from public;
+revoke all on function public.can_access_event(uuid) from public;
 revoke all on function public.can_access_task_proof_storage(text) from public;
 revoke all on function public.can_access_campaign_asset_storage(text) from public;
 revoke all on function public.can_update_campaign_asset_storage(text) from public;
@@ -812,6 +833,7 @@ grant execute on function public.owns_merchant(text) to authenticated;
 grant execute on function public.storage_path_uuid(text, integer) to authenticated;
 grant execute on function public.storage_path_segment(text, integer) to authenticated;
 grant execute on function public.can_access_event_proof_storage(text) to authenticated;
+grant execute on function public.can_access_event(uuid) to authenticated;
 grant execute on function public.can_access_task_proof_storage(text) to authenticated;
 grant execute on function public.can_access_campaign_asset_storage(text) to authenticated;
 grant execute on function public.can_update_campaign_asset_storage(text) to authenticated;
@@ -1030,6 +1052,25 @@ create policy "events_outlet_update" on public.events
   for update to authenticated
   using ((select public.owns_outlet(outlet_id)) or (select public.is_current_app_user(submitter_user_id)))
   with check ((select public.owns_outlet(outlet_id)) or (select public.is_current_app_user(submitter_user_id)));
+
+-- public.event_history_logs
+alter table public.event_history_logs enable row level security;
+drop policy if exists "event_history_logs_admin_all" on public.event_history_logs;
+drop policy if exists "event_history_logs_event_select" on public.event_history_logs;
+drop policy if exists "event_history_logs_event_insert" on public.event_history_logs;
+create policy "event_history_logs_admin_all" on public.event_history_logs
+  for all to authenticated
+  using ((select public.is_admin()))
+  with check ((select public.is_admin()));
+create policy "event_history_logs_event_select" on public.event_history_logs
+  for select to authenticated
+  using ((select public.can_access_event(event_id)));
+create policy "event_history_logs_event_insert" on public.event_history_logs
+  for insert to authenticated
+  with check (
+    (select public.is_current_app_user(actor_user_id))
+    and (select public.can_access_event(event_id))
+  );
 
 -- public.tasks
 alter table public.tasks enable row level security;
