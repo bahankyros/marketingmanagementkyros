@@ -873,27 +873,30 @@ export function Tasks() {
           <h1 className="text-3xl font-bold tracking-tight text-neutral-900">Tasks</h1>
           <p className="mt-1 text-neutral-500">Assign work, collect proof, and review completion.</p>
         </div>
-        {isAdmin && (
-          <button
-            type="button"
-            onClick={openCreatePanel}
-            className="inline-flex items-center gap-2 rounded-lg bg-neutral-900 px-4 py-2 font-medium text-white shadow-sm transition-colors hover:bg-neutral-800"
-          >
-            <Plus size={18} />
-            Assign Task
-          </button>
-        )}
-        {isPic && (
-          <button
-            type="button"
-            onClick={openPicRequestPanel}
-            disabled={outletScopedNoOutlet}
-            className="inline-flex items-center gap-2 rounded-lg bg-neutral-900 px-4 py-2 font-medium text-white shadow-sm transition-colors hover:bg-neutral-800 disabled:cursor-not-allowed disabled:bg-neutral-400"
-          >
-            <Plus size={18} />
-            Request Admin Action
-          </button>
-        )}
+        <div className="flex flex-wrap items-center gap-3">
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={openCreatePanel}
+              className="inline-flex items-center gap-2 rounded-lg bg-neutral-900 px-4 py-2 font-medium text-white shadow-sm transition-colors hover:bg-neutral-800"
+            >
+              <Plus size={18} />
+              Assign Task
+            </button>
+          )}
+
+          {isPic && (
+            <button
+              type="button"
+              onClick={openPicRequestPanel}
+              disabled={outletScopedNoOutlet}
+              className="inline-flex items-center gap-2 rounded-lg bg-neutral-900 px-4 py-2 font-medium text-white shadow-sm transition-colors hover:bg-neutral-800 disabled:cursor-not-allowed disabled:bg-neutral-400"
+            >
+              <Plus size={18} />
+              Request Admin Action
+            </button>
+          )}
+        </div>
       </header>
 
       {feedback && (
