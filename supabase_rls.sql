@@ -896,6 +896,7 @@ create policy "mall_display_proofs_insert" on storage.objects
 alter table public.users enable row level security;
 drop policy if exists "users_admin_all" on public.users;
 drop policy if exists "users_self_select" on public.users;
+drop policy if exists "users_active_admin_select" on public.users;
 create policy "users_admin_all" on public.users
   for all to authenticated
   using ((select public.is_admin()))
@@ -903,6 +904,13 @@ create policy "users_admin_all" on public.users
 create policy "users_self_select" on public.users
   for select to authenticated
   using (auth_user_id = (select auth.uid()));
+create policy "users_active_admin_select" on public.users
+  for select to authenticated
+  using (
+    role = 'admin'
+    and status = 'active'
+    and (select public.is_active_app_user())
+  );
 
 -- public.outlets
 alter table public.outlets enable row level security;

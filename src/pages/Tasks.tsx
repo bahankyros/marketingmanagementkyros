@@ -46,6 +46,12 @@ type OutletAssigneeOption = {
   outletName: string;
 };
 
+type AdminAssigneeOption = {
+  uid: string;
+  displayName: string;
+  email: string;
+};
+
 type EventOption = {
   id: string;
   eventName: string;
@@ -64,6 +70,12 @@ type TaskCreateFormState = {
   outletName: string;
   eventId: string;
   dueAt: string;
+};
+
+type PicRequestFormState = {
+  title: string;
+  description: string;
+  assignedToUid: string;
 };
 
 type FeedbackState = {
@@ -157,6 +169,21 @@ function buildDefaultCreateForm() {
   };
 }
 
+function buildDefaultPicRequestForm(): PicRequestFormState {
+  return {
+    title: '',
+    description: '',
+    assignedToUid: ''
+  };
+}
+
+function createDefaultRequestDueAt() {
+  const dueDate = new Date();
+  dueDate.setDate(dueDate.getDate() + 3);
+  dueDate.setHours(17, 0, 0, 0);
+  return dueDate;
+}
+
 function buildUploadState(url = '', path = ''): UploadState {
   const normalizedPath = path || extractStorageObjectPath('task-proofs', url);
   return normalizedPath
@@ -220,17 +247,22 @@ function normalizeEventOption(row: any): EventOption {
 export function Tasks() {
   const { user, userData } = useAuth();
   const role = userData?.role;
-  const isAdmin = role === 'admin';
-  const isOutletScopedUser = role === 'supervisor' || role === 'pic';
+  const normalizedRole = typeof role === 'string' ? role.trim().toLowerCase() : '';
+  const isAdmin = normalizedRole === 'admin';
+  const isPic = normalizedRole === 'pic';
+  const isOutletScopedUser = normalizedRole === 'supervisor' || normalizedRole === 'pic';
   const canAccessTasks = isAdmin || isOutletScopedUser;
 
   const [tasks, setTasks] = useState<TaskRecord[]>([]);
   const [assignees, setAssignees] = useState<OutletAssigneeOption[]>([]);
+  const [adminAssignees, setAdminAssignees] = useState<AdminAssigneeOption[]>([]);
   const [events, setEvents] = useState<EventOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const [isPicRequestOpen, setIsPicRequestOpen] = useState(false);
   const [selectedTask, setSelectedTask] = useState<TaskRecord | null>(null);
   const [createForm, setCreateForm] = useState<TaskCreateFormState>(buildDefaultCreateForm());
+  const [picRequestForm, setPicRequestForm] = useState<PicRequestFormState>(buildDefaultPicRequestForm());
   const [outletUserStatus, setOutletUserStatus] = useState<'in_progress' | 'proof_submitted'>('in_progress');
   const [proofTextDraft, setProofTextDraft] = useState('');
   const [adminReviewStatus, setAdminReviewStatus] = useState<'approved' | 'rejected' | 'completed'>('approved');
@@ -461,9 +493,76 @@ export function Tasks() {
     };
   }, [user, isAdmin]);
 
+  useEffect(() => {
+    if (!user || (!isPic && !isAdmin)) {
+      setAdminAssignees([]);
+      return;
+    }
+
+    let isMounted = true;
+
+    const loadAdminAssignees = async () => {
+      const { data, error } = await supabase
+        .from('users')
+        .select('id, email, display_name, role, status')
+        .eq('role', 'admin')
+        .eq('status', 'active')
+        .order('display_name', { ascending: true });
+
+      if (!isMounted) return;
+
+      if (error) {
+        console.error('Error loading admin task assignees:', error);
+        setFeedback({ tone: 'error', message: 'Failed to load admin assignees.' });
+        setAdminAssignees([]);
+        return;
+      }
+
+      const normalized = (data || [])
+        .map((profile) => {
+          const displayName = typeof profile.display_name === 'string' && profile.display_name.trim()
+            ? profile.display_name.trim()
+            : (typeof profile.email === 'string' ? profile.email.trim() : profile.id);
+
+          if (!profile.id || !displayName) {
+            return null;
+          }
+
+          return {
+            uid: profile.id,
+            displayName,
+            email: typeof profile.email === 'string' ? profile.email.trim() : ''
+          };
+        })
+        .filter((assignee): assignee is AdminAssigneeOption => assignee !== null)
+        .sort((left, right) => left.displayName.localeCompare(right.displayName));
+
+      setAdminAssignees(normalized);
+    };
+
+    void loadAdminAssignees();
+
+    const channel = supabase
+      .channel('core-ops-admin-task-assignees')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, () => {
+        void loadAdminAssignees();
+      })
+      .subscribe();
+
+    return () => {
+      isMounted = false;
+      void supabase.removeChannel(channel);
+    };
+  }, [user, isAdmin, isPic]);
+
   const assigneeMap = useMemo(
     () => new Map(assignees.map((assignee) => [assignee.uid, assignee])),
     [assignees]
+  );
+
+  const adminAssigneeMap = useMemo(
+    () => new Map(adminAssignees.map((admin) => [admin.uid, admin])),
+    [adminAssignees]
   );
 
   const eventsMap = useMemo(
@@ -490,7 +589,10 @@ export function Tasks() {
     }
 
     const assignee = assigneeMap.get(task.assignedToUid);
-    return assignee ? assignee.displayName : task.assignedToUid;
+    if (assignee) return assignee.displayName;
+
+    const adminAssignee = adminAssigneeMap.get(task.assignedToUid);
+    return adminAssignee ? adminAssignee.displayName : task.assignedToUid;
   };
 
   const canManageTaskProgress = (task: TaskRecord | null) => Boolean(
@@ -520,14 +622,20 @@ export function Tasks() {
 
   const reviewHelpCopy = 'Review is separate from proof upload. Outlet teams upload first, then submit.';
 
-  const isCreateSubmitDisabled = submitting || assignees.length === 0;
-
   const outletScopedNoOutlet = isOutletScopedUser && !userData?.outlet_id;
+  const isCreateSubmitDisabled = submitting || assignees.length === 0;
+  const isPicRequestSubmitDisabled = submitting || adminAssignees.length === 0 || outletScopedNoOutlet;
 
   const openCreatePanel = () => {
     setCreateForm(buildDefaultCreateForm());
     setFeedback(null);
     setIsCreateOpen(true);
+  };
+
+  const openPicRequestPanel = () => {
+    setPicRequestForm(buildDefaultPicRequestForm());
+    setFeedback(null);
+    setIsPicRequestOpen(true);
   };
 
   const openTaskPanel = (task: TaskRecord) => {
@@ -595,6 +703,60 @@ export function Tasks() {
     } catch (error) {
       console.error('Error creating task:', error);
       setFeedback({ tone: 'error', message: 'Failed to assign task.' });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleCreatePicRequest = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!isPic || !userData?.id || !userData?.outlet_id) {
+      setFeedback({ tone: 'error', message: 'PIC profile and assigned outlet are required.' });
+      return;
+    }
+
+    if (!picRequestForm.title.trim() || !picRequestForm.assignedToUid) {
+      setFeedback({ tone: 'error', message: 'Title and admin assignee are required.' });
+      return;
+    }
+
+    const selectedAdmin = adminAssignees.find((admin) => admin.uid === picRequestForm.assignedToUid) || null;
+    if (!selectedAdmin) {
+      setFeedback({ tone: 'error', message: 'Select a valid active admin.' });
+      return;
+    }
+
+    const dueDate = createDefaultRequestDueAt();
+
+    setSubmitting(true);
+    setFeedback(null);
+
+    try {
+      const { error } = await supabase.from('tasks').insert({
+        title: picRequestForm.title.trim(),
+        description: picRequestForm.description.trim(),
+        outlet_id: userData.outlet_id,
+        assigned_by_user_id: userData.id,
+        assigned_to_user_id: selectedAdmin.uid,
+        task_type: 'general',
+        event_id: null,
+        status: 'assigned',
+        due_at: dueDate.toISOString(),
+        proof_text: '',
+        proof_image_url: '',
+        proof_image_path: '',
+        created_at: nowIso(),
+        updated_at: nowIso()
+      });
+
+      if (error) throw error;
+
+      setIsPicRequestOpen(false);
+      setPicRequestForm(buildDefaultPicRequestForm());
+      setFeedback({ tone: 'success', message: 'Admin action request sent.' });
+    } catch (error) {
+      console.error('Error creating PIC admin request:', error);
+      setFeedback({ tone: 'error', message: 'Failed to send admin action request.' });
     } finally {
       setSubmitting(false);
     }
@@ -719,6 +881,17 @@ export function Tasks() {
           >
             <Plus size={18} />
             Assign Task
+          </button>
+        )}
+        {isPic && (
+          <button
+            type="button"
+            onClick={openPicRequestPanel}
+            disabled={outletScopedNoOutlet}
+            className="inline-flex items-center gap-2 rounded-lg bg-neutral-900 px-4 py-2 font-medium text-white shadow-sm transition-colors hover:bg-neutral-800 disabled:cursor-not-allowed disabled:bg-neutral-400"
+          >
+            <Plus size={18} />
+            Request Admin Action
           </button>
         )}
       </header>
@@ -990,6 +1163,105 @@ export function Tasks() {
                   className="rounded-lg bg-neutral-900 px-5 py-2 font-medium text-white shadow-sm transition-colors hover:bg-neutral-800 disabled:cursor-not-allowed disabled:bg-neutral-400"
                 >
                   {submitting ? 'Assigning...' : 'Assign Task'}
+                </button>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {isPicRequestOpen && isPic && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsPicRequestOpen(false)}
+              className="fixed inset-0 z-40 bg-neutral-900/30 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ x: '100%' }}
+              animate={{ x: 0 }}
+              exit={{ x: '100%' }}
+              transition={{ type: 'spring', bounce: 0, duration: 0.3 }}
+              className="fixed right-0 top-0 bottom-0 z-50 flex w-full max-w-md flex-col border-l border-neutral-200 bg-white shadow-2xl"
+            >
+              <div className="flex items-center justify-between border-b border-neutral-100 bg-neutral-50 px-6 py-4">
+                <div>
+                  <h3 className="text-lg font-bold text-neutral-900">Request Admin Action</h3>
+                  <p className="mt-0.5 text-sm text-neutral-500">
+                    Send an outlet request directly to an admin.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsPicRequestOpen(false)}
+                  className="rounded-lg p-2 text-neutral-500 transition-colors hover:bg-neutral-200"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-6">
+                <form id="pic-request-form" onSubmit={handleCreatePicRequest} className="space-y-5">
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-neutral-700">Title</label>
+                    <input
+                      type="text"
+                      value={picRequestForm.title}
+                      onChange={(event) => setPicRequestForm((current) => ({ ...current, title: event.target.value }))}
+                      className="w-full rounded-lg border border-neutral-200 bg-neutral-50 p-2 outline-none focus:ring-2 focus:ring-neutral-900"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-neutral-700">Description</label>
+                    <textarea
+                      rows={5}
+                      value={picRequestForm.description}
+                      onChange={(event) => setPicRequestForm((current) => ({ ...current, description: event.target.value }))}
+                      className="w-full rounded-lg border border-neutral-200 bg-neutral-50 p-2 outline-none focus:ring-2 focus:ring-neutral-900"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-neutral-700">Assign To</label>
+                    <select
+                      value={picRequestForm.assignedToUid}
+                      onChange={(event) => setPicRequestForm((current) => ({ ...current, assignedToUid: event.target.value }))}
+                      className="w-full rounded-lg border border-neutral-200 bg-neutral-50 p-2 outline-none focus:ring-2 focus:ring-neutral-900"
+                    >
+                      <option value="">Select active admin</option>
+                      {adminAssignees.map((admin) => (
+                        <option key={admin.uid} value={admin.uid}>
+                          {admin.displayName}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="rounded-xl border border-neutral-100 bg-neutral-50 p-4 text-sm text-neutral-500">
+                    {userData?.outlet_name || userData?.outlet_id || 'Assigned outlet required'}
+                  </div>
+                </form>
+              </div>
+
+              <div className="flex justify-end gap-3 border-t border-neutral-100 bg-neutral-50 p-4">
+                <button
+                  type="button"
+                  onClick={() => setIsPicRequestOpen(false)}
+                  className="rounded-lg px-5 py-2 font-medium text-neutral-600 transition-colors hover:bg-neutral-200"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  form="pic-request-form"
+                  disabled={isPicRequestSubmitDisabled}
+                  className="rounded-lg bg-neutral-900 px-5 py-2 font-medium text-white shadow-sm transition-colors hover:bg-neutral-800 disabled:cursor-not-allowed disabled:bg-neutral-400"
+                >
+                  {submitting ? 'Sending...' : 'Send Request'}
                 </button>
               </div>
             </motion.div>

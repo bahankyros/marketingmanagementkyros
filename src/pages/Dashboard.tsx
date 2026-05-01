@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { motion } from 'motion/react';
 import { 
   TrendingUp, AlertCircle, Megaphone, Target, DollarSign, Activity, AlertTriangle,
@@ -7,8 +7,48 @@ import {
   BarChart2, Image, LayoutList, CheckCircle2, Circle
 } from 'lucide-react';
 import { useAuth } from '../lib/AuthContext';
+import { supabase } from '../lib/supabase';
 import { useDashboardData } from '../lib/useDashboardData';
 import { CardSkeleton } from '../components/Skeleton';
+
+type PicRequestTask = {
+  id: string;
+  title: string;
+  description: string;
+  status: string;
+  outletId: string;
+  dueAt: Date | null;
+  createdAt: Date | null;
+  creatorName: string;
+  creatorOutlet: string;
+};
+
+function parseDashboardDate(value: unknown) {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function normalizePicRequestTask(row: any): PicRequestTask {
+  const creator = Array.isArray(row.creator) ? row.creator[0] : row.creator;
+  const creatorName = typeof creator?.display_name === 'string' && creator.display_name.trim()
+    ? creator.display_name.trim()
+    : (typeof creator?.email === 'string' ? creator.email.trim() : 'PIC');
+
+  return {
+    id: typeof row.id === 'string' ? row.id : '',
+    title: typeof row.title === 'string' ? row.title : '',
+    description: typeof row.description === 'string' ? row.description : '',
+    status: typeof row.status === 'string' ? row.status : 'assigned',
+    outletId: typeof row.outlet_id === 'string' ? row.outlet_id : '',
+    dueAt: parseDashboardDate(row.due_at),
+    createdAt: parseDashboardDate(row.created_at),
+    creatorName,
+    creatorOutlet: typeof creator?.outlet_name === 'string' && creator.outlet_name.trim()
+      ? creator.outlet_name.trim()
+      : ''
+  };
+}
 
 function RestrictedAccessPanel({
   title,
@@ -33,6 +73,64 @@ export function Dashboard() {
   const isSupervisorDashboard = userRole === 'supervisor' || userRole === 'pic';
   const dbData = useDashboardData(user, userRole);
   const access = dbData.access;
+  const [picRequestTasks, setPicRequestTasks] = useState<PicRequestTask[]>([]);
+  const [picRequestError, setPicRequestError] = useState('');
+
+  useEffect(() => {
+    if (!user || !isAdminDashboard) {
+      setPicRequestTasks([]);
+      setPicRequestError('');
+      return;
+    }
+
+    let isMounted = true;
+
+    const loadPicRequestTasks = async () => {
+      const { data, error } = await supabase
+        .from('tasks')
+        .select(`
+          id,
+          title,
+          description,
+          status,
+          outlet_id,
+          due_at,
+          created_at,
+          assigned_by_user_id,
+          creator:users!tasks_assigned_by_user_id_fkey!inner(role, display_name, email, outlet_name)
+        `)
+        .eq('creator.role', 'pic')
+        .not('status', 'in', '("approved","rejected","completed")')
+        .order('created_at', { ascending: false })
+        .limit(12);
+
+      if (!isMounted) return;
+
+      if (error) {
+        console.error('Error loading PIC request tasks:', error);
+        setPicRequestError('Failed to load PIC requests.');
+        setPicRequestTasks([]);
+        return;
+      }
+
+      setPicRequestError('');
+      setPicRequestTasks((data || []).map(normalizePicRequestTask));
+    };
+
+    void loadPicRequestTasks();
+
+    const channel = supabase
+      .channel('admin-dashboard-pic-task-requests')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, () => {
+        void loadPicRequestTasks();
+      })
+      .subscribe();
+
+    return () => {
+      isMounted = false;
+      void supabase.removeChannel(channel);
+    };
+  }, [user, isAdminDashboard]);
   
   if (dbData.loading) {
     return (
@@ -578,6 +676,66 @@ export function Dashboard() {
               </div>
             )}
           </div>
+        </div>
+      </motion.section>
+
+      <motion.section
+        className="space-y-6 pt-4"
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.3, delay: 0.08 }}
+      >
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-semibold text-neutral-900 flex items-center gap-2">
+            <CheckSquare className="h-5 w-5 text-fuchsia-500" />
+            Action Required: PIC Requests
+          </h2>
+          <span className="rounded-full bg-fuchsia-50 px-3 py-1 text-sm font-semibold text-fuchsia-700">
+            {picRequestTasks.length}
+          </span>
+        </div>
+
+        <div className="overflow-hidden rounded-2xl border border-neutral-100 bg-white shadow-sm">
+          {picRequestError ? (
+            <div className="p-6 text-sm font-medium text-rose-600">{picRequestError}</div>
+          ) : picRequestTasks.length === 0 ? (
+            <div className="p-6 text-sm text-neutral-500">No PIC requests waiting for admin action.</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead className="border-b border-neutral-100 bg-neutral-50 text-neutral-500">
+                  <tr>
+                    <th className="px-5 py-3 font-medium">Request</th>
+                    <th className="px-5 py-3 font-medium">PIC</th>
+                    <th className="px-5 py-3 font-medium">Due</th>
+                    <th className="px-5 py-3 font-medium">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-neutral-100">
+                  {picRequestTasks.map((task) => (
+                    <tr key={task.id} className="hover:bg-neutral-50">
+                      <td className="px-5 py-4">
+                        <p className="font-semibold text-neutral-900">{task.title}</p>
+                        <p className="mt-1 max-w-xl text-neutral-500">{task.description || 'No description provided.'}</p>
+                      </td>
+                      <td className="px-5 py-4">
+                        <p className="font-medium text-neutral-900">{task.creatorName}</p>
+                        <p className="mt-1 text-neutral-500">{task.creatorOutlet || task.outletId}</p>
+                      </td>
+                      <td className="px-5 py-4 text-neutral-600">
+                        {task.dueAt ? task.dueAt.toLocaleString() : 'No due date'}
+                      </td>
+                      <td className="px-5 py-4">
+                        <span className="rounded-full bg-amber-50 px-2.5 py-1 text-xs font-bold uppercase tracking-wider text-amber-700">
+                          {task.status.replace('_', ' ')}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       </motion.section>
 
