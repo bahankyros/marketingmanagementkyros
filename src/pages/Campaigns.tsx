@@ -212,8 +212,9 @@ function isChecklistTemplateCompatible(formType: 'digital' | 'physical', templat
 
 export function Campaigns() {
   const { user, userData } = useAuth();
-  const userRole = userData?.role;
-  const isAdmin = userRole === 'admin';
+  const role = userData?.role;
+  const normalizedRole = typeof role === 'string' ? role.trim().toLowerCase() : '';
+  const isAdmin = normalizedRole === 'admin';
   const canManageCampaigns = isAdmin;
   const [view, setView] = useState<'list' | 'new' | 'detail'>('list');
   const [campaigns, setCampaigns] = useState<any[]>([]);
@@ -223,6 +224,8 @@ export function Campaigns() {
   // Detail View State
   const [selectedCampaign, setSelectedCampaign] = useState<any>(null);
   const [checklist, setChecklist] = useState<any[]>([]);
+  const [loadingChecklist, setLoadingChecklist] = useState(false);
+  const [checklistError, setChecklistError] = useState('');
   const [isUploading, setIsUploading] = useState(false);
   const [campaignAssetUrl, setCampaignAssetUrl] = useState('');
   const [editingCampaign, setEditingCampaign] = useState<CampaignEditFormState | null>(null);
@@ -354,10 +357,13 @@ export function Campaigns() {
     const campaignId = toNullableUuid(selectedCampaign?.id);
     if (view !== 'detail' || !campaignId || !user || !userData) {
       setChecklist([]);
+      setChecklistError('');
+      setLoadingChecklist(false);
       return;
     }
 
     const fetchChecklist = async () => {
+      setLoadingChecklist(true);
       const { data, error } = await supabase
         .from('campaign_checklist_items')
         .select('*')
@@ -366,11 +372,15 @@ export function Campaigns() {
 
       if (error) {
         console.error("Error fetching checklist:", error);
+        setChecklistError('Checklist could not be loaded. Confirm campaign checklist RLS allows read-only users.');
         setChecklist([]);
+        setLoadingChecklist(false);
         return;
       }
 
+      setChecklistError('');
       setChecklist((data || []).map(normalizeChecklistItem));
+      setLoadingChecklist(false);
     };
 
     void fetchChecklist();
@@ -727,7 +737,7 @@ export function Campaigns() {
             </button>
           )}
 
-          {view === 'detail' && selectedCampaign && userRole === 'admin' && (
+          {view === 'detail' && selectedCampaign && isAdmin && (
             <>
               <button
                 type="button"
@@ -860,7 +870,7 @@ export function Campaigns() {
       )}
 
       {/* NEW CAMPAIGN FORM VIEW */}
-      {view === 'new' && (
+      {view === 'new' && canManageCampaigns && (
         <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="bg-white rounded-2xl shadow-sm border border-neutral-100 overflow-hidden">
           <div className="flex border-b border-neutral-100">
              <button 
@@ -1136,12 +1146,20 @@ export function Campaigns() {
               </div>
 
               <div className="divide-y divide-neutral-100 p-2 flex-grow overflow-auto max-h-[500px]">
-                 {checklist.length === 0 ? (
-                    <div className="p-8 text-center text-neutral-500">
-                      Loading checklist tasks...
-                    </div>
-                 ) : (
-                    checklist.map(item => (
+                {loadingChecklist ? (
+                  <div className="p-8 text-center text-neutral-500">
+                    Loading checklist tasks...
+                  </div>
+                ) : checklistError ? (
+                  <div className="p-8 text-center text-sm font-medium text-rose-600">
+                    {checklistError}
+                  </div>
+                ) : checklist.length === 0 ? (
+                  <div className="p-8 text-center text-neutral-500">
+                    No checklist tasks recorded.
+                  </div>
+                ) : (
+                  checklist.map(item => (
                       <button 
                          key={item.id}
                          onClick={() => toggleChecklistItem(item.id, item.completed)}
@@ -1171,7 +1189,7 @@ export function Campaigns() {
       )}
 
       <AnimatePresence>
-        {editingCampaign && selectedCampaign && (
+        {editingCampaign && selectedCampaign && isAdmin && (
           <>
             <motion.div
               initial={{ opacity: 0 }}
@@ -1303,7 +1321,7 @@ export function Campaigns() {
       </AnimatePresence>
 
       <AnimatePresence>
-        {isDeleteModalOpen && selectedCampaign && (
+        {isDeleteModalOpen && selectedCampaign && isAdmin && (
           <>
             <motion.div
               initial={{ opacity: 0 }}
