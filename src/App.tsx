@@ -80,7 +80,7 @@ export default function App() {
             <Route
               path="mascots"
               element={
-                <RoleGuard allowedRoles={['admin', 'supervisor', 'pic']}>
+                <RoleGuard allowedRoles={['admin', 'supervisor', 'finance', 'pic']}>
                   <Mascots />
                 </RoleGuard>
               }

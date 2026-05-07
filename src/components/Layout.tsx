@@ -20,7 +20,7 @@ const navItems: Array<{
   { path: '/mall-displays', label: 'Displays', icon: <MonitorPlay size={20} />, allowedRoles: ['admin', 'supervisor', 'pic'] },
   { path: '/events', label: 'Calendar', icon: <Calendar size={20} />, allowedRoles: ['admin', 'supervisor', 'pic'] },
   { path: '/inbox', label: 'Inbox', icon: <Bell size={20} />, allowedRoles: ['admin', 'supervisor', 'pic'] },
-  { path: '/mascots', label: 'Mascot', icon: <Smile size={20} />, allowedRoles: ['admin', 'supervisor', 'pic'] },
+  { path: '/mascots', label: 'Mascot', icon: <Smile size={20} />, allowedRoles: ['admin', 'supervisor', 'finance', 'pic'] },
   { path: '/blog', label: 'Blog', icon: <BookOpen size={20} />, allowedRoles: ['admin', 'finance'] },
   { path: '/ads', label: 'Paid Ads', icon: <MousePointerClick size={20} />, allowedRoles: ['admin', 'finance'] },
   { path: '/delivery', label: 'Delivery', icon: <Truck size={20} />, allowedRoles: ['admin', 'supervisor', 'pic'] },

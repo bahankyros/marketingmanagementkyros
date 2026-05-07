@@ -153,13 +153,15 @@ export function Mascots() {
   const { user, userData } = useAuth();
   const normalizedRole = userData?.role?.toLowerCase().trim();
   const isAdmin = normalizedRole === 'admin';
+  const isPic = normalizedRole === 'pic';
   const isOutletScopedUser = normalizedRole === 'supervisor' || normalizedRole === 'pic';
-  const canRequestMascot = isAdmin || isOutletScopedUser;
+  const canViewMascot = Boolean(normalizedRole);
+  const canRequestMascot = isPic;
   const canLogCondition = isAdmin;
-  const canViewMascotHistory = isAdmin || isOutletScopedUser;
+  const canViewMascotHistory = canViewMascot;
   const currentAppUserId = toNullableUuid(userData?.id);
   const assignedOutletId = toNullableUuid(userData?.outlet_id);
-  const outletScopedMissingOutlet = isOutletScopedUser && !assignedOutletId;
+  const outletScopedMissingOutlet = isPic && !assignedOutletId;
 
   const [activeTab, setActiveTab] = useState<'requests' | 'logs'>('requests');
   const [view, setView] = useState<'default' | 'book' | 'logCondition'>('default');
@@ -183,13 +185,7 @@ export function Mascots() {
   });
 
   useEffect(() => {
-    if (!user || !userData || !canRequestMascot) {
-      setBookingRequests([]);
-      setLoadingBookings(false);
-      return;
-    }
-
-    if (outletScopedMissingOutlet) {
+    if (!user || !userData || !canViewMascot) {
       setBookingRequests([]);
       setLoadingBookings(false);
       return;
@@ -200,18 +196,12 @@ export function Mascots() {
     const loadBookings = async () => {
       setLoadingBookings(true);
 
-      let request = supabase
+      const { data, error } = await supabase
         .from('mascot_bookings')
         .select('*')
         .gte('end_at', new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())
         .order('start_at', { ascending: true })
         .limit(200);
-
-      if (isOutletScopedUser) {
-        request = request.eq('outlet_id', assignedOutletId || '');
-      }
-
-      const { data, error } = await request;
 
       if (!isMounted) return;
 
@@ -247,10 +237,10 @@ export function Mascots() {
       isMounted = false;
       void supabase.removeChannel(channel);
     };
-  }, [user, userData, canRequestMascot, isAdmin, isOutletScopedUser, assignedOutletId, outletScopedMissingOutlet]);
+  }, [user, userData, canViewMascot]);
 
   useEffect(() => {
-    if (!user || !userData || !canViewMascotHistory || !currentAppUserId) {
+    if (!user || !userData || !canViewMascotHistory) {
       setLogs([]);
       setLoadingLogs(false);
       return;
@@ -261,17 +251,11 @@ export function Mascots() {
     const loadLogs = async () => {
       setLoadingLogs(true);
 
-      let request = supabase
+      const { data, error } = await supabase
         .from('mascot_logs')
         .select('*')
         .order('created_at', { ascending: false })
         .limit(100);
-
-      if (!isAdmin) {
-        request = request.eq('assigned_pic_user_id', currentAppUserId);
-      }
-
-      const { data, error } = await request;
 
       if (!isMounted) return;
 
@@ -298,7 +282,7 @@ export function Mascots() {
       isMounted = false;
       void supabase.removeChannel(channel);
     };
-  }, [user, userData, canViewMascotHistory, isAdmin, currentAppUserId]);
+  }, [user, userData, canViewMascotHistory]);
 
   useEffect(() => {
     if (!user || !userData || !isAdmin) {
