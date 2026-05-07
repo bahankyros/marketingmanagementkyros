@@ -62,14 +62,16 @@ type EventOption = {
   endAt: Date | null;
 };
 
+type OutletOption = {
+  id: string;
+  name: string;
+};
+
 type TaskCreateFormState = {
   title: string;
   description: string;
   taskType: TaskType;
-  selectedUserIds: string[];
-  outletId: string;
-  outletName: string;
-  eventId: string;
+  selectedOutletIds: string[];
   dueAt: string;
 };
 
@@ -158,15 +160,12 @@ function formatEventOptionLabel(event: EventOption) {
   return `${event.eventName} (${timeLabel})`;
 }
 
-function buildDefaultCreateForm() {
+function buildDefaultCreateForm(): TaskCreateFormState {
   return {
     title: '',
     description: '',
     taskType: 'general' as TaskType,
-    selectedUserIds: [],
-    outletId: '',
-    outletName: '',
-    eventId: '',
+    selectedOutletIds: [],
     dueAt: ''
   };
 }
@@ -259,6 +258,7 @@ export function Tasks() {
   const [tasks, setTasks] = useState<TaskRecord[]>([]);
   const [assignees, setAssignees] = useState<OutletAssigneeOption[]>([]);
   const [adminAssignees, setAdminAssignees] = useState<AdminAssigneeOption[]>([]);
+  const [outlets, setOutlets] = useState<OutletOption[]>([]);
   const [events, setEvents] = useState<EventOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
@@ -546,6 +546,51 @@ export function Tasks() {
     };
   }, [user, isAdmin, isPic]);
 
+  useEffect(() => {
+    if (!user || !isAdmin) {
+      setOutlets([]);
+      return;
+    }
+
+    let isMounted = true;
+
+    const loadOutlets = async () => {
+      const { data, error } = await supabase
+        .from('outlets')
+        .select('id, name, is_active, display_order')
+        .eq('is_active', true)
+        .order('display_order', { ascending: true })
+        .order('name', { ascending: true });
+
+      if (!isMounted) return;
+
+      if (error) {
+        console.error('Error loading task outlets:', error);
+        setFeedback({ tone: 'error', message: 'Failed to load outlets.' });
+        setOutlets([]);
+        return;
+      }
+
+      setOutlets((data || [])
+        .map((outlet) => {
+          const outletName = typeof outlet.name === 'string' ? outlet.name.trim() : '';
+          return outlet.id && outletName ? { id: outlet.id, name: outletName } : null;
+        })
+        .filter((outlet): outlet is OutletOption => outlet !== null));
+    };
+
+    void loadOutlets();
+
+    const unsubscribe = subscribeToTable('core-ops-task-outlets', 'outlets', () => {
+      void loadOutlets();
+    });
+
+    return () => {
+      isMounted = false;
+      unsubscribe();
+    };
+  }, [user, isAdmin]);
+
   const assigneeMap = useMemo(
     () => new Map(assignees.map((assignee) => [assignee.uid, assignee])),
     [assignees]
@@ -561,38 +606,35 @@ export function Tasks() {
     [events]
   );
 
-  const outletOptionsForCreate = useMemo(() => {
-    const outletMap = new Map<string, string>();
+  const outletOptionsForCreate = outlets;
+
+  const outletOptionsById = useMemo(
+    () => new Map(outletOptionsForCreate.map((outlet) => [outlet.id, outlet])),
+    [outletOptionsForCreate]
+  );
+
+  const picByOutletId = useMemo(() => {
+    const picMap = new Map<string, OutletAssigneeOption>();
 
     assignees.forEach((assignee) => {
-      if (!assignee.outletId) return;
-      outletMap.set(assignee.outletId, assignee.outletName || assignee.outletId);
+      if (assignee.role === 'pic' && assignee.outletId && !picMap.has(assignee.outletId)) {
+        picMap.set(assignee.outletId, assignee);
+      }
     });
 
-    return Array.from(outletMap, ([id, name]) => ({ id, name }))
-      .sort((left, right) => left.name.localeCompare(right.name));
+    return picMap;
   }, [assignees]);
 
-  const availableAssigneesForCreate = useMemo(
-    () => assignees.filter((assignee) => assignee.outletId === createForm.outletId),
-    [assignees, createForm.outletId]
+  const selectedOutletsForCreate = useMemo(
+    () => createForm.selectedOutletIds
+      .map((outletId) => outletOptionsById.get(outletId))
+      .filter((outlet): outlet is OutletOption => Boolean(outlet)),
+    [createForm.selectedOutletIds, outletOptionsById]
   );
 
-  const selectedAssigneesForCreate = useMemo(
-    () => createForm.selectedUserIds
-      .map((uid) => assigneeMap.get(uid))
-      .filter((assignee): assignee is OutletAssigneeOption => Boolean(assignee)),
-    [assigneeMap, createForm.selectedUserIds]
-  );
-
-  const unselectedAssigneesForCreate = useMemo(
-    () => availableAssigneesForCreate.filter((assignee) => !createForm.selectedUserIds.includes(assignee.uid)),
-    [availableAssigneesForCreate, createForm.selectedUserIds]
-  );
-
-  const availableEventsForCreate = useMemo(
-    () => events.filter((event) => eventMatchesOutlet(event, createForm.outletId, createForm.outletName)),
-    [events, createForm.outletId, createForm.outletName]
+  const unselectedOutletsForCreate = useMemo(
+    () => outletOptionsForCreate.filter((outlet) => !createForm.selectedOutletIds.includes(outlet.id)),
+    [createForm.selectedOutletIds, outletOptionsForCreate]
   );
 
   const outletLabelForTask = (task: TaskRecord) => {
@@ -626,11 +668,7 @@ export function Tasks() {
 
   const canManageSelectedTaskProgress = canManageTaskProgress(selectedTask);
 
-  const assigneeRoleLabel = (assignee: OutletAssigneeOption) => (
-    assignee.role === 'pic' ? 'PIC' : 'Supervisor'
-  );
-
-  const assigneeRequiredMessage = 'Title, at least one assignee, outlet, and due date are required.';
+  const assigneeRequiredMessage = 'Title, at least one outlet, and due date are required.';
 
   const noTaskCopy = isAdmin
     ? 'Assign the first outlet task to start the workflow.'
@@ -639,7 +677,7 @@ export function Tasks() {
   const reviewHelpCopy = 'Review is separate from proof upload. Outlet teams upload first, then submit.';
 
   const outletScopedNoOutlet = isOutletScopedUser && !userData?.outlet_id;
-  const isCreateSubmitDisabled = submitting || assignees.length === 0 || createForm.selectedUserIds.length === 0;
+  const isCreateSubmitDisabled = submitting || createForm.selectedOutletIds.length === 0;
   const isPicRequestDeadlineInvalid = Number.isNaN(new Date(picRequestForm.dueAt).getTime());
   const isPicRequestSubmitDisabled = submitting || adminAssignees.length === 0 || outletScopedNoOutlet || isPicRequestDeadlineInvalid;
 
@@ -664,40 +702,33 @@ export function Tasks() {
     setFeedback(null);
   };
 
-  const handleCreateOutletChange = (nextOutletId: string) => {
-    const outlet = outletOptionsForCreate.find((option) => option.id === nextOutletId);
-    setCreateForm((current) => ({
-      ...current,
-      selectedUserIds: [],
-      outletId: outlet?.id || '',
-      outletName: outlet?.name || '',
-      eventId: ''
-    }));
-  };
-
   const handleCreateTask = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!isAdmin || !userData?.id) return;
 
     const dueDate = new Date(createForm.dueAt);
-    const linkedEvent = createForm.eventId ? eventsMap.get(createForm.eventId) || null : null;
-    if (!createForm.title.trim() || createForm.selectedUserIds.length === 0 || !createForm.outletId || Number.isNaN(dueDate.getTime())) {
+    if (!createForm.title.trim() || createForm.selectedOutletIds.length === 0 || Number.isNaN(dueDate.getTime())) {
       setFeedback({ tone: 'error', message: assigneeRequiredMessage });
       return;
     }
 
-    const selectedAssignees = createForm.selectedUserIds
-      .map((uid) => assigneeMap.get(uid))
-      .filter((assignee): assignee is OutletAssigneeOption => Boolean(assignee))
-      .filter((assignee) => assignee.outletId === createForm.outletId);
+    const selectedOutlets = createForm.selectedOutletIds
+      .map((outletId) => outletOptionsById.get(outletId))
+      .filter((outlet): outlet is OutletOption => Boolean(outlet));
 
-    if (selectedAssignees.length !== createForm.selectedUserIds.length) {
-      setFeedback({ tone: 'error', message: 'One or more selected assignees no longer match the selected outlet.' });
-      return;
-    }
+    const taskTargets = selectedOutlets
+      .map((outlet) => ({
+        outlet,
+        pic: picByOutletId.get(outlet.id) || null
+      }))
+      .filter((target): target is { outlet: OutletOption; pic: OutletAssigneeOption } => Boolean(target.pic));
 
-    if (createForm.eventId && (!linkedEvent || !eventMatchesOutlet(linkedEvent, createForm.outletId, createForm.outletName))) {
-      setFeedback({ tone: 'error', message: 'Pick a linked event for the same outlet.' });
+    const skippedOutletNames = selectedOutlets
+      .filter((outlet) => !picByOutletId.has(outlet.id))
+      .map((outlet) => outlet.name);
+
+    if (taskTargets.length === 0) {
+      setFeedback({ tone: 'error', message: 'No selected outlets currently have an active PIC assigned.' });
       return;
     }
 
@@ -706,14 +737,14 @@ export function Tasks() {
 
     try {
       const timestamp = nowIso();
-      const taskPayloads = selectedAssignees.map((assignee) => ({
+      const taskPayloads = taskTargets.map(({ outlet, pic }) => ({
         title: createForm.title.trim(),
         description: createForm.description.trim(),
-        outlet_id: createForm.outletId,
+        outlet_id: outlet.id,
         assigned_by_user_id: userData.id,
-        assigned_to_user_id: assignee.uid,
+        assigned_to_user_id: pic.uid,
         task_type: createForm.taskType,
-        event_id: createForm.eventId || null,
+        event_id: null,
         status: 'assigned',
         due_at: dueDate.toISOString(),
         proof_text: '',
@@ -723,21 +754,41 @@ export function Tasks() {
         updated_at: timestamp
       }));
 
-      const { error } = await supabase.from('tasks').insert(taskPayloads);
+      const { data, error } = await supabase
+        .from('tasks')
+        .insert(taskPayloads)
+        .select('*');
 
       if (error) throw error;
+
+      const insertedTasks = (data || []).map(normalizeTask);
+      setTasks((current) => {
+        const merged = new Map<string, TaskRecord>();
+
+        insertedTasks.forEach((task) => merged.set(task.id, task));
+        current.forEach((task) => {
+          if (!merged.has(task.id)) {
+            merged.set(task.id, task);
+          }
+        });
+
+        return Array.from(merged.values())
+          .sort((left, right) => (right.createdAt?.getTime() || 0) - (left.createdAt?.getTime() || 0));
+      });
 
       setIsCreateOpen(false);
       setCreateForm(buildDefaultCreateForm());
       setFeedback({
         tone: 'success',
-        message: selectedAssignees.length === 1
-          ? 'Task assigned.'
-          : `${selectedAssignees.length} tasks assigned.`
+        message: skippedOutletNames.length > 0
+          ? `${taskTargets.length} tasks assigned. Skipped outlets without PICs: ${skippedOutletNames.join(', ')}.`
+          : taskTargets.length === 1
+            ? 'Task assigned.'
+            : `${taskTargets.length} tasks assigned.`
       });
     } catch (error) {
-      console.error('Error creating task:', error);
-      setFeedback({ tone: 'error', message: 'Failed to assign task.' });
+      console.error('Error creating tasks:', error);
+      setFeedback({ tone: 'error', message: 'Failed to assign tasks.' });
     } finally {
       setSubmitting(false);
     }
@@ -1140,107 +1191,94 @@ export function Tasks() {
                     </div>
                   </div>
 
-                  <div className="space-y-1">
-                    <label className="text-sm font-medium text-neutral-700">Outlet</label>
-                    <select
-                      value={createForm.outletId}
-                      onChange={(event) => handleCreateOutletChange(event.target.value)}
-                      className="w-full rounded-lg border border-neutral-200 bg-neutral-50 p-2 outline-none focus:ring-2 focus:ring-neutral-900"
-                    >
-                      <option value="">Select outlet</option>
-                      {outletOptionsForCreate.map((outlet) => (
-                        <option key={outlet.id} value={outlet.id}>
-                          {outlet.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
                   <div className="space-y-2">
-                    <label className="text-sm font-medium text-neutral-700">Assignees</label>
+                    <div className="flex items-center justify-between gap-3">
+                      <label className="text-sm font-medium text-neutral-700">Outlets</label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCreateForm((current) => ({
+                            ...current,
+                            selectedOutletIds:
+                              current.selectedOutletIds.length === outletOptionsForCreate.length
+                                ? []
+                                : outletOptionsForCreate.map((outlet) => outlet.id)
+                          }));
+                        }}
+                        disabled={outletOptionsForCreate.length === 0}
+                        className="text-xs font-semibold text-neutral-600 transition-colors hover:text-neutral-900 disabled:cursor-not-allowed disabled:text-neutral-300"
+                      >
+                        {createForm.selectedOutletIds.length === outletOptionsForCreate.length ? 'Clear All' : 'Select All'}
+                      </button>
+                    </div>
+
                     <select
                       value=""
-                      disabled={!createForm.outletId || unselectedAssigneesForCreate.length === 0}
+                      disabled={unselectedOutletsForCreate.length === 0}
                       onChange={(event) => {
-                        const selectedUserId = event.target.value;
-                        if (!selectedUserId) return;
+                        const selectedOutletId = event.target.value;
+                        if (!selectedOutletId) return;
 
                         setCreateForm((current) => {
-                          if (current.selectedUserIds.includes(selectedUserId)) {
+                          if (current.selectedOutletIds.includes(selectedOutletId)) {
                             return current;
                           }
 
                           return {
                             ...current,
-                            selectedUserIds: [...current.selectedUserIds, selectedUserId]
+                            selectedOutletIds: [...current.selectedOutletIds, selectedOutletId]
                           };
                         });
                       }}
                       className="w-full rounded-lg border border-neutral-200 bg-neutral-50 p-2 outline-none focus:ring-2 focus:ring-neutral-900 disabled:bg-neutral-100 disabled:text-neutral-400"
                     >
                       <option value="">
-                        {!createForm.outletId
-                          ? 'Select an outlet first'
-                          : availableAssigneesForCreate.length === 0
-                            ? 'No active assignees found'
-                            : unselectedAssigneesForCreate.length === 0
-                              ? 'All eligible assignees selected'
-                              : 'Add an assignee'}
+                        {outletOptionsForCreate.length === 0
+                          ? 'No outlets available'
+                          : unselectedOutletsForCreate.length === 0
+                            ? 'All outlets selected'
+                            : 'Add an outlet'}
                       </option>
-                      {unselectedAssigneesForCreate.map((assignee) => (
-                        <option key={assignee.uid} value={assignee.uid}>
-                          {assignee.displayName} - {assigneeRoleLabel(assignee)}
+                      {unselectedOutletsForCreate.map((outlet) => (
+                        <option key={outlet.id} value={outlet.id}>
+                          {outlet.name}
                         </option>
                       ))}
                     </select>
 
-                    {selectedAssigneesForCreate.length > 0 ? (
+                    {selectedOutletsForCreate.length > 0 ? (
                       <div className="flex flex-wrap gap-2">
-                        {selectedAssigneesForCreate.map((assignee) => (
-                          <span
-                            key={assignee.uid}
-                            className="inline-flex items-center gap-2 rounded-full border border-neutral-200 bg-white px-3 py-1.5 text-xs font-medium text-neutral-800 shadow-sm"
-                          >
-                            <span>{assignee.displayName}</span>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setCreateForm((current) => ({
-                                  ...current,
-                                  selectedUserIds: current.selectedUserIds.filter((userId) => userId !== assignee.uid)
-                                }));
-                              }}
-                              className="rounded-full text-neutral-400 transition-colors hover:text-red-600 focus:outline-none focus:ring-2 focus:ring-red-200"
-                              aria-label={`Remove ${assignee.displayName}`}
+                        {selectedOutletsForCreate.map((outlet) => {
+                          const outletPic = picByOutletId.get(outlet.id);
+
+                          return (
+                            <span
+                              key={outlet.id}
+                              className="inline-flex items-center gap-2 rounded-full border border-neutral-200 bg-white px-3 py-1.5 text-xs font-medium text-neutral-800 shadow-sm"
+                              title={outletPic ? `PIC: ${outletPic.displayName}` : 'No active PIC assigned. This outlet will be skipped.'}
                             >
-                              <X className="h-3 w-3" />
-                            </button>
-                          </span>
-                        ))}
+                              <span>{outlet.name}</span>
+                              {!outletPic && <span className="font-semibold text-amber-600">No PIC</span>}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setCreateForm((current) => ({
+                                    ...current,
+                                    selectedOutletIds: current.selectedOutletIds.filter((outletId) => outletId !== outlet.id)
+                                  }));
+                                }}
+                                className="rounded-full text-neutral-400 transition-colors hover:text-red-600 focus:outline-none focus:ring-2 focus:ring-red-200"
+                                aria-label={`Remove ${outlet.name}`}
+                              >
+                                <X className="h-3 w-3" />
+                              </button>
+                            </span>
+                          );
+                        })}
                       </div>
                     ) : (
-                      <p className="text-xs text-neutral-500">Add one or more assignees for this task.</p>
+                      <p className="text-xs text-neutral-500">Add one or more outlets. Tasks will be assigned to each outlet&apos;s active PIC.</p>
                     )}
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-sm font-medium text-neutral-700">Linked Event</label>
-                    <select
-                      value={createForm.eventId}
-                      onChange={(event) => setCreateForm((current) => ({ ...current, eventId: event.target.value }))}
-                      disabled={!createForm.outletId}
-                      className="w-full rounded-lg border border-neutral-200 bg-neutral-50 p-2 outline-none focus:ring-2 focus:ring-neutral-900 disabled:bg-neutral-100 disabled:text-neutral-400"
-                    >
-                      <option value="">No linked event</option>
-                      {availableEventsForCreate.map((calendarEvent) => (
-                        <option key={calendarEvent.id} value={calendarEvent.id}>
-                          {formatEventOptionLabel(calendarEvent)}
-                        </option>
-                      ))}
-                    </select>
-                    <p className="text-xs text-neutral-500">
-                      Only events for this outlet appear here.
-                    </p>
                   </div>
                 </form>
               </div>
