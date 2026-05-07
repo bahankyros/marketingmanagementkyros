@@ -29,6 +29,17 @@ function parseDashboardDate(value: unknown) {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
+function formatPicRequestDueAt(value: Date | null) {
+  if (!value) return 'No due date';
+
+  return value.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit'
+  });
+}
+
 function normalizePicRequestTask(row: any): PicRequestTask {
   const creator = Array.isArray(row.creator) ? row.creator[0] : row.creator;
   const creatorName = typeof creator?.display_name === 'string' && creator.display_name.trim()
@@ -723,7 +734,7 @@ export function Dashboard() {
                         <p className="mt-1 text-neutral-500">{task.creatorOutlet || task.outletId}</p>
                       </td>
                       <td className="px-5 py-4 text-neutral-600">
-                        {task.dueAt ? task.dueAt.toLocaleString() : 'No due date'}
+                        Needed by: {formatPicRequestDueAt(task.dueAt)}
                       </td>
                       <td className="px-5 py-4">
                         <span className="rounded-full bg-amber-50 px-2.5 py-1 text-xs font-bold uppercase tracking-wider text-amber-700">

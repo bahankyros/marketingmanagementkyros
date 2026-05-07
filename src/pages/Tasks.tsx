@@ -76,6 +76,7 @@ type PicRequestFormState = {
   title: string;
   description: string;
   assignedToUid: string;
+  dueAt: string;
 };
 
 type FeedbackState = {
@@ -173,7 +174,8 @@ function buildDefaultPicRequestForm(): PicRequestFormState {
   return {
     title: '',
     description: '',
-    assignedToUid: ''
+    assignedToUid: '',
+    dueAt: toDateTimeLocal(createDefaultRequestDueAt())
   };
 }
 
@@ -624,7 +626,8 @@ export function Tasks() {
 
   const outletScopedNoOutlet = isOutletScopedUser && !userData?.outlet_id;
   const isCreateSubmitDisabled = submitting || assignees.length === 0;
-  const isPicRequestSubmitDisabled = submitting || adminAssignees.length === 0 || outletScopedNoOutlet;
+  const isPicRequestDeadlineInvalid = Number.isNaN(new Date(picRequestForm.dueAt).getTime());
+  const isPicRequestSubmitDisabled = submitting || adminAssignees.length === 0 || outletScopedNoOutlet || isPicRequestDeadlineInvalid;
 
   const openCreatePanel = () => {
     setCreateForm(buildDefaultCreateForm());
@@ -715,8 +718,9 @@ export function Tasks() {
       return;
     }
 
-    if (!picRequestForm.title.trim() || !picRequestForm.assignedToUid) {
-      setFeedback({ tone: 'error', message: 'Title and admin assignee are required.' });
+    const dueDate = new Date(picRequestForm.dueAt);
+    if (!picRequestForm.title.trim() || !picRequestForm.assignedToUid || Number.isNaN(dueDate.getTime())) {
+      setFeedback({ tone: 'error', message: 'Title, admin assignee, and requested deadline are required.' });
       return;
     }
 
@@ -725,8 +729,6 @@ export function Tasks() {
       setFeedback({ tone: 'error', message: 'Select a valid active admin.' });
       return;
     }
-
-    const dueDate = createDefaultRequestDueAt();
 
     setSubmitting(true);
     setFeedback(null);
@@ -1242,6 +1244,17 @@ export function Tasks() {
                         </option>
                       ))}
                     </select>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-neutral-700">Requested Date & Time</label>
+                    <input
+                      required
+                      type="datetime-local"
+                      value={picRequestForm.dueAt}
+                      onChange={(event) => setPicRequestForm((current) => ({ ...current, dueAt: event.target.value }))}
+                      className="w-full rounded-lg border border-neutral-200 bg-neutral-50 p-2 outline-none focus:ring-2 focus:ring-neutral-900"
+                    />
                   </div>
 
                   <div className="rounded-xl border border-neutral-100 bg-neutral-50 p-4 text-sm text-neutral-500">
