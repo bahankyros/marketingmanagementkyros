@@ -578,11 +578,6 @@ export function Tasks() {
     [assignees, createForm.outletId]
   );
 
-  const selectedCreateAssigneeIds = useMemo(
-    () => new Set(createForm.selectedUserIds),
-    [createForm.selectedUserIds]
-  );
-
   const selectedAssigneesForCreate = useMemo(
     () => createForm.selectedUserIds
       .map((uid) => assigneeMap.get(uid))
@@ -590,8 +585,10 @@ export function Tasks() {
     [assigneeMap, createForm.selectedUserIds]
   );
 
-  const allCreateAssigneesSelected = availableAssigneesForCreate.length > 0
-    && availableAssigneesForCreate.every((assignee) => selectedCreateAssigneeIds.has(assignee.uid));
+  const unselectedAssigneesForCreate = useMemo(
+    () => availableAssigneesForCreate.filter((assignee) => !createForm.selectedUserIds.includes(assignee.uid)),
+    [availableAssigneesForCreate, createForm.selectedUserIds]
+  );
 
   const availableEventsForCreate = useMemo(
     () => events.filter((event) => eventMatchesOutlet(event, createForm.outletId, createForm.outletName)),
@@ -675,30 +672,6 @@ export function Tasks() {
       outletId: outlet?.id || '',
       outletName: outlet?.name || '',
       eventId: ''
-    }));
-  };
-
-  const handleCreateAssigneeToggle = (uid: string) => {
-    const assignee = assigneeMap.get(uid);
-    if (!assignee || assignee.outletId !== createForm.outletId) return;
-
-    setCreateForm((current) => {
-      const exists = current.selectedUserIds.includes(uid);
-      return {
-        ...current,
-        selectedUserIds: exists
-          ? current.selectedUserIds.filter((selectedUid) => selectedUid !== uid)
-          : [...current.selectedUserIds, uid]
-      };
-    });
-  };
-
-  const handleSelectAllCreateAssignees = () => {
-    setCreateForm((current) => ({
-      ...current,
-      selectedUserIds: allCreateAssigneesSelected
-        ? []
-        : availableAssigneesForCreate.map((assignee) => assignee.uid)
     }));
   };
 
@@ -1183,58 +1156,70 @@ export function Tasks() {
                     </select>
                   </div>
 
-                  <div className="space-y-1">
-                    <div className="flex items-center justify-between gap-3">
-                      <label className="text-sm font-medium text-neutral-700">Assignees</label>
-                      <button
-                        type="button"
-                        onClick={handleSelectAllCreateAssignees}
-                        disabled={!createForm.outletId || availableAssigneesForCreate.length === 0}
-                        className="text-xs font-semibold text-neutral-600 transition-colors hover:text-neutral-900 disabled:cursor-not-allowed disabled:text-neutral-300"
-                      >
-                        {allCreateAssigneesSelected ? 'Clear All' : 'Select All'}
-                      </button>
-                    </div>
-                    <div className="rounded-lg border border-neutral-200 bg-neutral-50">
-                      <div className="border-b border-neutral-200 px-3 py-2 text-xs font-medium text-neutral-500">
-                        {createForm.outletId
-                          ? `${createForm.selectedUserIds.length} of ${availableAssigneesForCreate.length} selected`
-                          : 'Select an outlet first'}
-                      </div>
-                      <div className="max-h-52 overflow-y-auto p-2">
-                        {!createForm.outletId ? (
-                          <p className="px-2 py-3 text-sm text-neutral-500">Choose an outlet to load eligible PICs and supervisors.</p>
-                        ) : availableAssigneesForCreate.length === 0 ? (
-                          <p className="px-2 py-3 text-sm text-neutral-500">No active assignees found for this outlet.</p>
-                        ) : (
-                          availableAssigneesForCreate.map((assignee) => (
-                            <label
-                              key={assignee.uid}
-                              className="flex cursor-pointer items-start gap-3 rounded-md px-2 py-2 text-sm transition-colors hover:bg-white"
-                            >
-                              <input
-                                type="checkbox"
-                                checked={selectedCreateAssigneeIds.has(assignee.uid)}
-                                onChange={() => handleCreateAssigneeToggle(assignee.uid)}
-                                className="mt-1 h-4 w-4 rounded border-neutral-300 text-neutral-900 focus:ring-neutral-900"
-                              />
-                              <span>
-                                <span className="block font-medium text-neutral-900">{assignee.displayName}</span>
-                                <span className="text-xs text-neutral-500">{assigneeRoleLabel(assignee)} • {assignee.email || assignee.outletName}</span>
-                              </span>
-                            </label>
-                          ))
-                        )}
-                      </div>
-                    </div>
-                    {selectedAssigneesForCreate.length > 0 && (
-                      <div className="flex flex-wrap gap-2 pt-1">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-neutral-700">Assignees</label>
+                    <select
+                      value=""
+                      disabled={!createForm.outletId || unselectedAssigneesForCreate.length === 0}
+                      onChange={(event) => {
+                        const selectedUserId = event.target.value;
+                        if (!selectedUserId) return;
+
+                        setCreateForm((current) => {
+                          if (current.selectedUserIds.includes(selectedUserId)) {
+                            return current;
+                          }
+
+                          return {
+                            ...current,
+                            selectedUserIds: [...current.selectedUserIds, selectedUserId]
+                          };
+                        });
+                      }}
+                      className="w-full rounded-lg border border-neutral-200 bg-neutral-50 p-2 outline-none focus:ring-2 focus:ring-neutral-900 disabled:bg-neutral-100 disabled:text-neutral-400"
+                    >
+                      <option value="">
+                        {!createForm.outletId
+                          ? 'Select an outlet first'
+                          : availableAssigneesForCreate.length === 0
+                            ? 'No active assignees found'
+                            : unselectedAssigneesForCreate.length === 0
+                              ? 'All eligible assignees selected'
+                              : 'Add an assignee'}
+                      </option>
+                      {unselectedAssigneesForCreate.map((assignee) => (
+                        <option key={assignee.uid} value={assignee.uid}>
+                          {assignee.displayName} - {assigneeRoleLabel(assignee)}
+                        </option>
+                      ))}
+                    </select>
+
+                    {selectedAssigneesForCreate.length > 0 ? (
+                      <div className="flex flex-wrap gap-2">
                         {selectedAssigneesForCreate.map((assignee) => (
-                          <span key={assignee.uid} className="rounded-full bg-neutral-100 px-2.5 py-1 text-xs font-medium text-neutral-700">
-                            {assignee.displayName}
+                          <span
+                            key={assignee.uid}
+                            className="inline-flex items-center gap-2 rounded-full border border-neutral-200 bg-white px-3 py-1.5 text-xs font-medium text-neutral-800 shadow-sm"
+                          >
+                            <span>{assignee.displayName}</span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setCreateForm((current) => ({
+                                  ...current,
+                                  selectedUserIds: current.selectedUserIds.filter((userId) => userId !== assignee.uid)
+                                }));
+                              }}
+                              className="rounded-full text-neutral-400 transition-colors hover:text-red-600 focus:outline-none focus:ring-2 focus:ring-red-200"
+                              aria-label={`Remove ${assignee.displayName}`}
+                            >
+                              <X className="h-3 w-3" />
+                            </button>
                           </span>
                         ))}
                       </div>
+                    ) : (
+                      <p className="text-xs text-neutral-500">Add one or more assignees for this task.</p>
                     )}
                   </div>
 
