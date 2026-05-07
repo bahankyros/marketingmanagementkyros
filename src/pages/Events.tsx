@@ -18,6 +18,7 @@ import {
 import { useAuth } from '../lib/AuthContext';
 import { createPrivateStorageUrl, extractStorageObjectPath } from '../lib/privateStorage';
 import { supabase } from '../lib/supabase';
+import { subscribeToTable } from '../lib/supabaseData';
 import { useCampaigns } from '../lib/useCampaigns';
 
 type EventDecisionStatus = 'Proposed' | 'Reviewing' | 'Approved' | 'Rejected' | 'Completed';
@@ -399,16 +400,13 @@ export function Events() {
 
     void loadOutlets();
 
-    const channel = supabase
-      .channel('core-ops-event-outlets')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'outlets' }, () => {
-        void loadOutlets();
-      })
-      .subscribe();
+    const unsubscribe = subscribeToTable('core-ops-event-outlets', 'outlets', () => {
+      void loadOutlets();
+    });
 
     return () => {
       isMounted = false;
-      void supabase.removeChannel(channel);
+      unsubscribe();
     };
   }, [user, userData?.outlet_id, canViewEvents, isOutletScopedEventUser]);
 
@@ -460,16 +458,13 @@ export function Events() {
 
     void loadEvents();
 
-    const channel = supabase
-      .channel('core-ops-events')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'events' }, () => {
-        void loadEvents();
-      })
-      .subscribe();
+    const unsubscribe = subscribeToTable('core-ops-events', 'events', () => {
+      void loadEvents();
+    });
 
     return () => {
       isMounted = false;
-      void supabase.removeChannel(channel);
+      unsubscribe();
     };
   }, [user, userData?.outlet_id, canViewEvents, isOutletScopedEventUser]);
 
@@ -512,16 +507,13 @@ export function Events() {
 
     void loadLinkedTasks();
 
-    const channel = supabase
-      .channel('core-ops-event-linked-tasks')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, () => {
-        void loadLinkedTasks();
-      })
-      .subscribe();
+    const unsubscribe = subscribeToTable('core-ops-event-linked-tasks', 'tasks', () => {
+      void loadLinkedTasks();
+    });
 
     return () => {
       isMounted = false;
-      void supabase.removeChannel(channel);
+      unsubscribe();
     };
   }, [user, userData?.outlet_id, isOutletScopedEventUser, canSeeLinkedTasks]);
 
@@ -559,20 +551,18 @@ export function Events() {
 
     void loadHistoryLogs();
 
-    const channel = supabase
-      .channel(`core-ops-event-history-${selectedEventId}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'event_history_logs', filter: `event_id=eq.${selectedEventId}` },
-        () => {
-          void loadHistoryLogs();
-        }
-      )
-      .subscribe();
+    const unsubscribe = subscribeToTable(
+      `core-ops-event-history-${selectedEventId}`,
+      'event_history_logs',
+      () => {
+        void loadHistoryLogs();
+      },
+      { filter: `event_id=eq.${selectedEventId}` }
+    );
 
     return () => {
       isMounted = false;
-      void supabase.removeChannel(channel);
+      unsubscribe();
     };
   }, [user, canViewEvents, editorState?.id]);
 

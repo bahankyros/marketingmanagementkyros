@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../lib/AuthContext';
 import { supabase } from '../lib/supabase';
-import { toNullableUuid } from '../lib/supabaseData';
+import { subscribeToTable, toNullableUuid } from '../lib/supabaseData';
 
 type MascotBookingStatus = 'pending' | 'approved' | 'rejected' | 'cancelled';
 
@@ -226,16 +226,13 @@ export function Mascots() {
 
     void loadBookings();
 
-    const channel = supabase
-      .channel('core-ops-mascot-bookings')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'mascot_bookings' }, () => {
-        void loadBookings();
-      })
-      .subscribe();
+    const unsubscribe = subscribeToTable('core-ops-mascot-bookings', 'mascot_bookings', () => {
+      void loadBookings();
+    });
 
     return () => {
       isMounted = false;
-      void supabase.removeChannel(channel);
+      unsubscribe();
     };
   }, [user, userData, canViewMascot]);
 
@@ -271,16 +268,13 @@ export function Mascots() {
 
     void loadLogs();
 
-    const channel = supabase
-      .channel('core-ops-mascot-logs')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'mascot_logs' }, () => {
-        void loadLogs();
-      })
-      .subscribe();
+    const unsubscribe = subscribeToTable('core-ops-mascot-logs', 'mascot_logs', () => {
+      void loadLogs();
+    });
 
     return () => {
       isMounted = false;
-      void supabase.removeChannel(channel);
+      unsubscribe();
     };
   }, [user, userData, canViewMascotHistory]);
 
@@ -319,16 +313,13 @@ export function Mascots() {
 
     void loadOutlets();
 
-    const channel = supabase
-      .channel('core-ops-mascot-outlets')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'outlets' }, () => {
-        void loadOutlets();
-      })
-      .subscribe();
+    const unsubscribe = subscribeToTable('core-ops-mascot-outlets', 'outlets', () => {
+      void loadOutlets();
+    });
 
     return () => {
       isMounted = false;
-      void supabase.removeChannel(channel);
+      unsubscribe();
     };
   }, [user, userData, isAdmin]);
 

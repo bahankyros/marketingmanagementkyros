@@ -15,6 +15,7 @@ import {
 import { useAuth } from '../lib/AuthContext';
 import { createPrivateStorageUrl, extractStorageObjectPath } from '../lib/privateStorage';
 import { supabase } from '../lib/supabase';
+import { subscribeToTable } from '../lib/supabaseData';
 
 type TaskType = 'mall_display' | 'voucher_follow_up' | 'general';
 type TaskStatus = 'assigned' | 'in_progress' | 'proof_submitted' | 'approved' | 'rejected' | 'completed';
@@ -356,16 +357,13 @@ export function Tasks() {
 
     void loadTasks();
 
-    const channel = supabase
-      .channel('core-ops-tasks')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, () => {
-        void loadTasks();
-      })
-      .subscribe();
+    const unsubscribe = subscribeToTable('core-ops-tasks', 'tasks', () => {
+      void loadTasks();
+    });
 
     return () => {
       isMounted = false;
-      void supabase.removeChannel(channel);
+      unsubscribe();
     };
   }, [user, userData, isAdmin, isOutletScopedUser, canAccessTasks]);
 
@@ -416,16 +414,13 @@ export function Tasks() {
 
     void loadEvents();
 
-    const channel = supabase
-      .channel('core-ops-task-events')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'events' }, () => {
-        void loadEvents();
-      })
-      .subscribe();
+    const unsubscribe = subscribeToTable('core-ops-task-events', 'events', () => {
+      void loadEvents();
+    });
 
     return () => {
       isMounted = false;
-      void supabase.removeChannel(channel);
+      unsubscribe();
     };
   }, [user, userData, isOutletScopedUser, canAccessTasks]);
 
@@ -482,16 +477,13 @@ export function Tasks() {
 
     void loadAssignees();
 
-    const channel = supabase
-      .channel('core-ops-task-assignees')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, () => {
-        void loadAssignees();
-      })
-      .subscribe();
+    const unsubscribe = subscribeToTable('core-ops-task-assignees', 'users', () => {
+      void loadAssignees();
+    });
 
     return () => {
       isMounted = false;
-      void supabase.removeChannel(channel);
+      unsubscribe();
     };
   }, [user, isAdmin]);
 
@@ -544,16 +536,13 @@ export function Tasks() {
 
     void loadAdminAssignees();
 
-    const channel = supabase
-      .channel('core-ops-admin-task-assignees')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, () => {
-        void loadAdminAssignees();
-      })
-      .subscribe();
+    const unsubscribe = subscribeToTable('core-ops-admin-task-assignees', 'users', () => {
+      void loadAdminAssignees();
+    });
 
     return () => {
       isMounted = false;
-      void supabase.removeChannel(channel);
+      unsubscribe();
     };
   }, [user, isAdmin, isPic]);
 

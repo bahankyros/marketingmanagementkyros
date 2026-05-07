@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../lib/AuthContext';
 import { supabase } from '../lib/supabase';
+import { subscribeToTable } from '../lib/supabaseData';
 import { useDashboardData } from '../lib/useDashboardData';
 import { CardSkeleton } from '../components/Skeleton';
 
@@ -130,16 +131,13 @@ export function Dashboard() {
 
     void loadPicRequestTasks();
 
-    const channel = supabase
-      .channel('admin-dashboard-pic-task-requests')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, () => {
-        void loadPicRequestTasks();
-      })
-      .subscribe();
+    const unsubscribe = subscribeToTable('admin-dashboard-pic-task-requests', 'tasks', () => {
+      void loadPicRequestTasks();
+    });
 
     return () => {
       isMounted = false;
-      void supabase.removeChannel(channel);
+      unsubscribe();
     };
   }, [user, isAdminDashboard]);
   

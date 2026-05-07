@@ -326,18 +326,33 @@ export function useDashboardData(user: AuthUser | null, userRole: UserRole | nul
       setData((prev) => ({ ...prev, adHoc: { list, overdue, designs, emergencies } }));
     });
 
-    registerStream(access.mascots, 'mascots', ['mascot_schedule'], async () => {
-      const { data: schedule, error } = await supabase
-        .from('mascot_schedule')
-        .select('*');
+    registerStream(access.mascots, 'mascots', ['mascot_schedule', 'mascot_bookings', 'mascot_logs'], async () => {
+      const [
+        { data: schedule, error: scheduleError },
+        { data: bookings, error: bookingsError }
+      ] = await Promise.all([
+        supabase
+          .from('mascot_schedule')
+          .select('status'),
+        supabase
+          .from('mascot_bookings')
+          .select('status')
+      ]);
 
-      if (error) throw error;
+      if (scheduleError) throw scheduleError;
+      if (bookingsError) throw bookingsError;
 
-      const appearances = (schedule || []).filter((scheduleItem: any) =>
+      const scheduleAppearances = (schedule || []).filter((scheduleItem: any) =>
         scheduleItem.status === 'Completed' || scheduleItem.status === 'Approved'
       ).length;
+      const bookingAppearances = (bookings || []).filter((booking: any) =>
+        booking.status === 'approved'
+      ).length;
 
-      setData((prev) => ({ ...prev, mascots: { appearances } }));
+      setData((prev) => ({
+        ...prev,
+        mascots: { appearances: scheduleAppearances + bookingAppearances }
+      }));
     });
 
     registerStream(access.blogs, 'blogs', ['blog_outreach'], async () => {

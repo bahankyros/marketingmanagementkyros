@@ -11,7 +11,7 @@ import {
 import { useNavigate } from 'react-router';
 import { useAuth } from '../lib/AuthContext';
 import { supabase } from '../lib/supabase';
-import { toNullableUuid } from '../lib/supabaseData';
+import { subscribeToTable, toNullableUuid } from '../lib/supabaseData';
 
 type TaskInboxStatus = 'assigned' | 'in_progress' | 'proof_submitted' | 'approved' | 'rejected' | 'completed';
 type MascotInboxStatus = 'pending' | 'approved' | 'rejected' | 'cancelled';
@@ -194,16 +194,13 @@ export function Inbox() {
 
     void loadTasks();
 
-    const channel = supabase
-      .channel('core-ops-inbox-tasks')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, () => {
-        void loadTasks();
-      })
-      .subscribe();
+    const unsubscribe = subscribeToTable('core-ops-inbox-tasks', 'tasks', () => {
+      void loadTasks();
+    });
 
     return () => {
       isMounted = false;
-      void supabase.removeChannel(channel);
+      unsubscribe();
     };
   }, [user, userData, canUseInbox, currentAppUserId, assignedOutletId, outletScopedMissingOutlet, isAdmin]);
 
@@ -260,16 +257,13 @@ export function Inbox() {
 
     void loadBookings();
 
-    const channel = supabase
-      .channel('core-ops-inbox-mascot-bookings')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'mascot_bookings' }, () => {
-        void loadBookings();
-      })
-      .subscribe();
+    const unsubscribe = subscribeToTable('core-ops-inbox-mascot-bookings', 'mascot_bookings', () => {
+      void loadBookings();
+    });
 
     return () => {
       isMounted = false;
-      void supabase.removeChannel(channel);
+      unsubscribe();
     };
   }, [user, userData, canUseInbox, currentAppUserId, assignedOutletId, outletScopedMissingOutlet, isAdmin]);
 

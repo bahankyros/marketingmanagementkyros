@@ -21,13 +21,63 @@ export function toNumber(value: unknown, fallback = 0) {
   return Number.isFinite(normalized) ? normalized : fallback;
 }
 
-export function subscribeToTable(channelName: string, table: string, onChange: () => void) {
-  const channel = supabase
-    .channel(channelName)
-    .on('postgres_changes', { event: '*', schema: 'public', table }, onChange)
-    .subscribe();
+type RealtimeTableEvent = '*' | 'INSERT' | 'UPDATE' | 'DELETE';
+
+type RealtimeTableOptions = {
+  schema?: string;
+  events?: RealtimeTableEvent | RealtimeTableEvent[];
+  filter?: string;
+  debounceMs?: number;
+};
+
+export function subscribeToTable(
+  channelName: string,
+  table: string,
+  onChange: () => void,
+  options: RealtimeTableOptions = {}
+) {
+  const {
+    schema = 'public',
+    events = '*',
+    filter,
+    debounceMs = 150
+  } = options;
+  const channel = supabase.channel(channelName);
+  const eventList = Array.isArray(events) ? events : [events];
+  let debounceHandle: ReturnType<typeof setTimeout> | null = null;
+
+  const runChangeHandler = () => {
+    if (debounceHandle) {
+      clearTimeout(debounceHandle);
+    }
+
+    debounceHandle = setTimeout(() => {
+      debounceHandle = null;
+      onChange();
+    }, debounceMs);
+  };
+
+  eventList.forEach((event) => {
+    channel.on(
+      'postgres_changes',
+      {
+        event,
+        schema,
+        table,
+        ...(filter ? { filter } : {})
+      },
+      runChangeHandler
+    );
+  });
+
+  channel.subscribe();
 
   return () => {
+    if (debounceHandle) {
+      clearTimeout(debounceHandle);
+      debounceHandle = null;
+    }
+
     void supabase.removeChannel(channel);
   };
 }
@@ -48,4 +98,3 @@ export function normalizeCampaign(row: any) {
     updatedAt: row.updated_at || ''
   };
 }
-
