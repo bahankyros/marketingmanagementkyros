@@ -65,7 +65,7 @@ type TaskCreateFormState = {
   title: string;
   description: string;
   taskType: TaskType;
-  assignedToUid: string;
+  selectedUserIds: string[];
   outletId: string;
   outletName: string;
   eventId: string;
@@ -162,7 +162,7 @@ function buildDefaultCreateForm() {
     title: '',
     description: '',
     taskType: 'general' as TaskType,
-    assignedToUid: '',
+    selectedUserIds: [],
     outletId: '',
     outletName: '',
     eventId: '',
@@ -572,6 +572,38 @@ export function Tasks() {
     [events]
   );
 
+  const outletOptionsForCreate = useMemo(() => {
+    const outletMap = new Map<string, string>();
+
+    assignees.forEach((assignee) => {
+      if (!assignee.outletId) return;
+      outletMap.set(assignee.outletId, assignee.outletName || assignee.outletId);
+    });
+
+    return Array.from(outletMap, ([id, name]) => ({ id, name }))
+      .sort((left, right) => left.name.localeCompare(right.name));
+  }, [assignees]);
+
+  const availableAssigneesForCreate = useMemo(
+    () => assignees.filter((assignee) => assignee.outletId === createForm.outletId),
+    [assignees, createForm.outletId]
+  );
+
+  const selectedCreateAssigneeIds = useMemo(
+    () => new Set(createForm.selectedUserIds),
+    [createForm.selectedUserIds]
+  );
+
+  const selectedAssigneesForCreate = useMemo(
+    () => createForm.selectedUserIds
+      .map((uid) => assigneeMap.get(uid))
+      .filter((assignee): assignee is OutletAssigneeOption => Boolean(assignee)),
+    [assigneeMap, createForm.selectedUserIds]
+  );
+
+  const allCreateAssigneesSelected = availableAssigneesForCreate.length > 0
+    && availableAssigneesForCreate.every((assignee) => selectedCreateAssigneeIds.has(assignee.uid));
+
   const availableEventsForCreate = useMemo(
     () => events.filter((event) => eventMatchesOutlet(event, createForm.outletId, createForm.outletName)),
     [events, createForm.outletId, createForm.outletName]
@@ -612,11 +644,7 @@ export function Tasks() {
     assignee.role === 'pic' ? 'PIC' : 'Supervisor'
   );
 
-  const assigneeLabel = (assignee: OutletAssigneeOption) => (
-    `${assignee.displayName} (${assignee.outletName}, ${assigneeRoleLabel(assignee)})`
-  );
-
-  const assigneeRequiredMessage = 'Title, assignee, outlet, and due date are required.';
+  const assigneeRequiredMessage = 'Title, at least one assignee, outlet, and due date are required.';
 
   const noTaskCopy = isAdmin
     ? 'Assign the first outlet task to start the workflow.'
@@ -625,7 +653,7 @@ export function Tasks() {
   const reviewHelpCopy = 'Review is separate from proof upload. Outlet teams upload first, then submit.';
 
   const outletScopedNoOutlet = isOutletScopedUser && !userData?.outlet_id;
-  const isCreateSubmitDisabled = submitting || assignees.length === 0;
+  const isCreateSubmitDisabled = submitting || assignees.length === 0 || createForm.selectedUserIds.length === 0;
   const isPicRequestDeadlineInvalid = Number.isNaN(new Date(picRequestForm.dueAt).getTime());
   const isPicRequestSubmitDisabled = submitting || adminAssignees.length === 0 || outletScopedNoOutlet || isPicRequestDeadlineInvalid;
 
@@ -650,14 +678,38 @@ export function Tasks() {
     setFeedback(null);
   };
 
-  const handleCreateAssigneeChange = (nextUid: string) => {
-    const assignee = assigneeMap.get(nextUid);
+  const handleCreateOutletChange = (nextOutletId: string) => {
+    const outlet = outletOptionsForCreate.find((option) => option.id === nextOutletId);
     setCreateForm((current) => ({
       ...current,
-      assignedToUid: nextUid,
-      outletId: assignee?.outletId || '',
-      outletName: assignee?.outletName || '',
+      selectedUserIds: [],
+      outletId: outlet?.id || '',
+      outletName: outlet?.name || '',
       eventId: ''
+    }));
+  };
+
+  const handleCreateAssigneeToggle = (uid: string) => {
+    const assignee = assigneeMap.get(uid);
+    if (!assignee || assignee.outletId !== createForm.outletId) return;
+
+    setCreateForm((current) => {
+      const exists = current.selectedUserIds.includes(uid);
+      return {
+        ...current,
+        selectedUserIds: exists
+          ? current.selectedUserIds.filter((selectedUid) => selectedUid !== uid)
+          : [...current.selectedUserIds, uid]
+      };
+    });
+  };
+
+  const handleSelectAllCreateAssignees = () => {
+    setCreateForm((current) => ({
+      ...current,
+      selectedUserIds: allCreateAssigneesSelected
+        ? []
+        : availableAssigneesForCreate.map((assignee) => assignee.uid)
     }));
   };
 
@@ -667,8 +719,18 @@ export function Tasks() {
 
     const dueDate = new Date(createForm.dueAt);
     const linkedEvent = createForm.eventId ? eventsMap.get(createForm.eventId) || null : null;
-    if (!createForm.title.trim() || !createForm.assignedToUid || !createForm.outletId || Number.isNaN(dueDate.getTime())) {
+    if (!createForm.title.trim() || createForm.selectedUserIds.length === 0 || !createForm.outletId || Number.isNaN(dueDate.getTime())) {
       setFeedback({ tone: 'error', message: assigneeRequiredMessage });
+      return;
+    }
+
+    const selectedAssignees = createForm.selectedUserIds
+      .map((uid) => assigneeMap.get(uid))
+      .filter((assignee): assignee is OutletAssigneeOption => Boolean(assignee))
+      .filter((assignee) => assignee.outletId === createForm.outletId);
+
+    if (selectedAssignees.length !== createForm.selectedUserIds.length) {
+      setFeedback({ tone: 'error', message: 'One or more selected assignees no longer match the selected outlet.' });
       return;
     }
 
@@ -681,12 +743,13 @@ export function Tasks() {
     setFeedback(null);
 
     try {
-      const { error } = await supabase.from('tasks').insert({
+      const timestamp = nowIso();
+      const taskPayloads = selectedAssignees.map((assignee) => ({
         title: createForm.title.trim(),
         description: createForm.description.trim(),
         outlet_id: createForm.outletId,
         assigned_by_user_id: userData.id,
-        assigned_to_user_id: createForm.assignedToUid,
+        assigned_to_user_id: assignee.uid,
         task_type: createForm.taskType,
         event_id: createForm.eventId || null,
         status: 'assigned',
@@ -694,15 +757,22 @@ export function Tasks() {
         proof_text: '',
         proof_image_url: '',
         proof_image_path: '',
-        created_at: nowIso(),
-        updated_at: nowIso()
-      });
+        created_at: timestamp,
+        updated_at: timestamp
+      }));
+
+      const { error } = await supabase.from('tasks').insert(taskPayloads);
 
       if (error) throw error;
 
       setIsCreateOpen(false);
       setCreateForm(buildDefaultCreateForm());
-      setFeedback({ tone: 'success', message: 'Task assigned.' });
+      setFeedback({
+        tone: 'success',
+        message: selectedAssignees.length === 1
+          ? 'Task assigned.'
+          : `${selectedAssignees.length} tasks assigned.`
+      });
     } catch (error) {
       console.error('Error creating task:', error);
       setFeedback({ tone: 'error', message: 'Failed to assign task.' });
@@ -1109,26 +1179,74 @@ export function Tasks() {
                   </div>
 
                   <div className="space-y-1">
-                    <label className="text-sm font-medium text-neutral-700">Assignee</label>
+                    <label className="text-sm font-medium text-neutral-700">Outlet</label>
                     <select
-                      value={createForm.assignedToUid}
-                      onChange={(event) => handleCreateAssigneeChange(event.target.value)}
+                      value={createForm.outletId}
+                      onChange={(event) => handleCreateOutletChange(event.target.value)}
                       className="w-full rounded-lg border border-neutral-200 bg-neutral-50 p-2 outline-none focus:ring-2 focus:ring-neutral-900"
                     >
-                      <option value="">Select outlet assignee</option>
-                      {assignees.map((assignee) => (
-                        <option key={assignee.uid} value={assignee.uid}>
-                          {assigneeLabel(assignee)}
+                      <option value="">Select outlet</option>
+                      {outletOptionsForCreate.map((outlet) => (
+                        <option key={outlet.id} value={outlet.id}>
+                          {outlet.name}
                         </option>
                       ))}
                     </select>
                   </div>
 
                   <div className="space-y-1">
-                    <label className="text-sm font-medium text-neutral-700">Outlet</label>
-                    <div className="rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm font-medium text-neutral-700">
-                      {createForm.outletName || 'Select an assignee first'}
+                    <div className="flex items-center justify-between gap-3">
+                      <label className="text-sm font-medium text-neutral-700">Assignees</label>
+                      <button
+                        type="button"
+                        onClick={handleSelectAllCreateAssignees}
+                        disabled={!createForm.outletId || availableAssigneesForCreate.length === 0}
+                        className="text-xs font-semibold text-neutral-600 transition-colors hover:text-neutral-900 disabled:cursor-not-allowed disabled:text-neutral-300"
+                      >
+                        {allCreateAssigneesSelected ? 'Clear All' : 'Select All'}
+                      </button>
                     </div>
+                    <div className="rounded-lg border border-neutral-200 bg-neutral-50">
+                      <div className="border-b border-neutral-200 px-3 py-2 text-xs font-medium text-neutral-500">
+                        {createForm.outletId
+                          ? `${createForm.selectedUserIds.length} of ${availableAssigneesForCreate.length} selected`
+                          : 'Select an outlet first'}
+                      </div>
+                      <div className="max-h-52 overflow-y-auto p-2">
+                        {!createForm.outletId ? (
+                          <p className="px-2 py-3 text-sm text-neutral-500">Choose an outlet to load eligible PICs and supervisors.</p>
+                        ) : availableAssigneesForCreate.length === 0 ? (
+                          <p className="px-2 py-3 text-sm text-neutral-500">No active assignees found for this outlet.</p>
+                        ) : (
+                          availableAssigneesForCreate.map((assignee) => (
+                            <label
+                              key={assignee.uid}
+                              className="flex cursor-pointer items-start gap-3 rounded-md px-2 py-2 text-sm transition-colors hover:bg-white"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={selectedCreateAssigneeIds.has(assignee.uid)}
+                                onChange={() => handleCreateAssigneeToggle(assignee.uid)}
+                                className="mt-1 h-4 w-4 rounded border-neutral-300 text-neutral-900 focus:ring-neutral-900"
+                              />
+                              <span>
+                                <span className="block font-medium text-neutral-900">{assignee.displayName}</span>
+                                <span className="text-xs text-neutral-500">{assigneeRoleLabel(assignee)} • {assignee.email || assignee.outletName}</span>
+                              </span>
+                            </label>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                    {selectedAssigneesForCreate.length > 0 && (
+                      <div className="flex flex-wrap gap-2 pt-1">
+                        {selectedAssigneesForCreate.map((assignee) => (
+                          <span key={assignee.uid} className="rounded-full bg-neutral-100 px-2.5 py-1 text-xs font-medium text-neutral-700">
+                            {assignee.displayName}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </div>
 
                   <div className="space-y-1">
