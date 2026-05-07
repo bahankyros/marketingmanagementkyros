@@ -11,6 +11,7 @@ import {
   ImageIcon,
   MapPin,
   Plus,
+  Trash2,
   Upload,
   X
 } from 'lucide-react';
@@ -319,6 +320,7 @@ export function Events() {
   const [editorState, setEditorState] = useState<EventEditorState | null>(null);
   const [eventPhotoUrl, setEventPhotoUrl] = useState('');
   const [isUploading, setIsUploading] = useState(false);
+  const [isDeletingEvent, setIsDeletingEvent] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [feedback, setFeedback] = useState<FeedbackState>(null);
 
@@ -798,6 +800,46 @@ export function Events() {
       setFeedback({ tone: 'error', message: 'Event save failed.' });
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleDeleteEvent = async () => {
+    if (!isAdmin || !editorState?.id) return;
+
+    const eventId = toNullableUuid(editorState.id);
+    if (!eventId) {
+      setFeedback({ tone: 'error', message: 'This event is missing a valid ID and cannot be deleted.' });
+      return;
+    }
+
+    if (!window.confirm('Are you sure you want to delete this event? This cannot be undone.')) {
+      return;
+    }
+
+    setIsDeletingEvent(true);
+    setFeedback(null);
+
+    try {
+      const { error } = await supabase
+        .from('events')
+        .delete()
+        .eq('id', eventId);
+
+      if (error) throw error;
+
+      setEvents((current) => current.filter((event) => event.id !== eventId));
+      setLinkedTasks((current) => current.map((task) => (
+        task.event_id === eventId ? { ...task, event_id: '' } : task
+      )));
+      setHistoryLogs([]);
+      setHistoryLogError('');
+      setEditorState(null);
+      setFeedback({ tone: 'success', message: 'Event deleted.' });
+    } catch (error) {
+      console.error('Error deleting event:', error);
+      setFeedback({ tone: 'error', message: 'Event deletion failed.' });
+    } finally {
+      setIsDeletingEvent(false);
     }
   };
 
@@ -1365,6 +1407,17 @@ export function Events() {
               </div>
 
               <div className="p-4 border-t border-neutral-100 bg-neutral-50 flex justify-end gap-3">
+                {isAdmin && editorState.id && (
+                  <button
+                    type="button"
+                    onClick={handleDeleteEvent}
+                    disabled={submitting || isUploading || isDeletingEvent}
+                    className="mr-auto inline-flex items-center gap-2 rounded-lg border border-rose-200 bg-rose-50 px-5 py-2 font-medium text-rose-700 transition-colors hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    {isDeletingEvent ? 'Deleting...' : 'Delete Event'}
+                  </button>
+                )}
                 <button onClick={() => setEditorState(null)} className="px-5 py-2 text-neutral-600 font-medium hover:bg-neutral-200 rounded-lg transition-colors">
                   {canManageEvents ? 'Cancel' : 'Close'}
                 </button>
