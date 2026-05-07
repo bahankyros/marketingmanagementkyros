@@ -23,6 +23,8 @@ import { Inbox } from './pages/Inbox';
 
 type UserRole = 'admin' | 'supervisor' | 'finance' | 'pic';
 
+const ALL_ACTIVE_ROLES: UserRole[] = ['admin', 'supervisor', 'finance', 'pic'];
+
 const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
   const { user, loading, accessState } = useAuth();
 
@@ -58,9 +60,30 @@ export default function App() {
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
-            <Route index element={<Dashboard />} />
-            <Route path="dashboard" element={<Dashboard />} />
-            <Route path="campaigns" element={<Campaigns />} />
+            <Route
+              index
+              element={
+                <RoleGuard allowedRoles={ALL_ACTIVE_ROLES}>
+                  <Dashboard />
+                </RoleGuard>
+              }
+            />
+            <Route
+              path="dashboard"
+              element={
+                <RoleGuard allowedRoles={ALL_ACTIVE_ROLES}>
+                  <Dashboard />
+                </RoleGuard>
+              }
+            />
+            <Route
+              path="campaigns"
+              element={
+                <RoleGuard allowedRoles={ALL_ACTIVE_ROLES}>
+                  <Campaigns />
+                </RoleGuard>
+              }
+            />
             <Route
               path="events"
               element={
