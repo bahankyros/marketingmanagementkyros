@@ -26,8 +26,8 @@ This agent owns UI composition, interaction flow, component ergonomics, and visu
 
 ## Form And Write Safety
 - Never let a submit handler fire with incomplete required data.
-- Guard auth-dependent actions until `user.uid` is available.
-- Match field names exactly to the Firestore schema.
+- Guard auth-dependent actions until the app user profile is available.
+- Match field names exactly to the Supabase schema.
 - Do not keep stale form fields that write values the backend will reject.
 - When uploads are involved, map the stored URL and metadata fields exactly to the approved schema.
 

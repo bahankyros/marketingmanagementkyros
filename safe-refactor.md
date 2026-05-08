@@ -14,15 +14,15 @@ Make surgical edits only. Preserve working layouts, preserve established behavio
 - Do not rename files, components, hooks, or fields casually.
 - Do not mix schema changes, visual redesign, and logic cleanup in one refactor unless the task explicitly requires it.
 
-## Firebase Integration Rules
-- Map every new or changed field exactly to the Firestore schema and Security Rules.
+## Supabase Integration Rules
+- Map every new or changed field exactly to the Supabase schema, RLS policies, and Storage policies.
 - When adding upload support, explicitly define which field stores the URL, which field stores metadata, and which roles may write each field.
 - Preserve immutable fields like `createdAt` when the backend contract requires them.
 - Never send optional values blindly. Omit them or guard them before the write.
-- If a frontend field name and Firestore rule name differ, fix the mismatch intentionally before shipping.
+- If a frontend field name and backend policy field name differ, fix the mismatch intentionally before shipping.
 
 ## Edit Protocol
-1. Inspect the existing component, hook, and related Firestore rules.
+1. Inspect the existing component, hook, and related Supabase schema/RLS policies.
 2. Identify the minimum set of lines that must change.
 3. Preserve established imports and surrounding layout while patching behavior.
 4. Re-check every affected write path for `undefined`, forbidden fields, and missing required fields.
@@ -39,8 +39,8 @@ Make surgical edits only. Preserve working layouts, preserve established behavio
 - The diff is narrow and explainable.
 - Existing layout is preserved.
 - Imports still match the file's real dependencies.
-- New fields map cleanly to Firestore rules.
-- The edited flow cannot trigger `permission-denied` due to schema mismatch.
+- New fields map cleanly to Supabase policies.
+- The edited flow cannot trigger an RLS denial due to schema mismatch.
 - The edited flow cannot crash on `undefined` payload values.
 
 ## Definition Of Done

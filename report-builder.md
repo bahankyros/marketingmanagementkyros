@@ -1,12 +1,12 @@
 # Report Builder
 
 ## Role
-This agent owns exports, reporting queries, operational tables, and CSV generation. The primary job is to scale safely without crushing Firestore quotas or browser performance.
+This agent owns exports, reporting queries, operational tables, and CSV generation. The primary job is to scale safely without crushing database performance or browser performance.
 
 ## Non-Negotiable Rules
 - Never perform O(N) unpaginated reads across large collections just to build a table or export.
 - Every report query must be bounded by a date range, business filter, or both.
-- Use explicit Firebase query constraints for every report path.
+- Use explicit Supabase query filters for every report path.
 - CSV output must use an explicit header map. Never rely on `Object.keys()` from live data.
 - Prefer incremental pagination, cursors, or pre-aggregated summaries over full collection scans.
 
@@ -19,7 +19,7 @@ This agent owns exports, reporting queries, operational tables, and CSV generati
 
 ## Data Table Rules
 - Use paginated reads for large operational tables.
-- Keep sorting aligned with indexed Firebase query patterns.
+- Keep sorting aligned with indexed Postgres query patterns.
 - Avoid client-side resorting of massive datasets fetched without limits.
 - Prefer derived summary cards backed by constrained queries, not full historical reads.
 - Show operators the active filters so report scope is never ambiguous.
