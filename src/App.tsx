@@ -35,10 +35,39 @@ function hasRecoveryHash() {
   return hashParams.get('type') === 'recovery' && Boolean(hashParams.get('access_token'));
 }
 
+function getHashErrorMessage() {
+  const hash = window.location.hash.replace(/^#/, '');
+  if (!hash) return null;
+
+  const hashParams = new URLSearchParams(hash);
+  const errorDescription = hashParams.get('error_description');
+  if (!errorDescription) return null;
+
+  return `${errorDescription}. Request a new reset link.`;
+}
+
+function clearUrlHash() {
+  window.history.replaceState(
+    window.history.state,
+    document.title,
+    `${window.location.pathname}${window.location.search}`
+  );
+}
+
 const PasswordRecoveryListener = () => {
   const navigate = useNavigate();
 
   useEffect(() => {
+    const hashErrorMessage = getHashErrorMessage();
+    if (hashErrorMessage) {
+      clearUrlHash();
+      navigate('/forgot-password', {
+        replace: true,
+        state: { authError: hashErrorMessage }
+      });
+      return;
+    }
+
     if (hasRecoveryHash()) {
       navigate('/update-password', { replace: true });
     }
@@ -94,6 +123,7 @@ export default function App() {
       <AuthProvider>
         <Routes>
           <Route path="/login" element={<Login />} />
+          <Route path="/forgot-password" element={<Login initialMode="reset" />} />
           <Route path="/update-password" element={<UpdatePassword />} />
           <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
             <Route

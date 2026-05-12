@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Navigate } from 'react-router';
+import { Navigate, useLocation } from 'react-router';
 import { LayoutDashboard } from 'lucide-react';
 import { useAuth } from '../lib/AuthContext';
 
@@ -8,6 +8,14 @@ type AuthMode = 'signIn' | 'signUp' | 'reset';
 type FeedbackState = {
   tone: 'error' | 'success';
   message: string;
+} | null;
+
+type LoginProps = {
+  initialMode?: AuthMode;
+};
+
+type LoginRouteState = {
+  authError?: string;
 } | null;
 
 function getAuthErrorMessage(error: any) {
@@ -29,14 +37,18 @@ function getAuthErrorMessage(error: any) {
   }
 }
 
-export function Login() {
+export function Login({ initialMode = 'signIn' }: LoginProps) {
+  const location = useLocation();
+  const routeState = location.state as LoginRouteState;
   const { user, accessState, authNotice, clearAuthNotice, signIn, signUp, resetPassword, logOut } = useAuth();
-  const [mode, setMode] = useState<AuthMode>('signIn');
+  const [mode, setMode] = useState<AuthMode>(initialMode);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const [feedback, setFeedback] = useState<FeedbackState>(null);
+  const [feedback, setFeedback] = useState<FeedbackState>(
+    routeState?.authError ? { tone: 'error', message: routeState.authError } : null
+  );
 
   if (user && accessState === 'active') {
     return <Navigate to="/" replace />;
