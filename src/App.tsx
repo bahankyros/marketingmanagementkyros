@@ -1,9 +1,11 @@
-import React from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router';
+import React, { useEffect } from 'react';
+import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-router';
 import { AuthProvider, useAuth } from './lib/AuthContext';
+import { supabase } from './lib/supabase';
 import { Layout } from './components/Layout';
 import { Dashboard } from './pages/Dashboard';
 import { Login } from './pages/Login';
+import { UpdatePassword } from './pages/UpdatePassword';
 import { Campaigns } from './pages/Campaigns';
 import { Events } from './pages/Events';
 import { MallDisplays } from './pages/MallDisplays';
@@ -24,6 +26,38 @@ import { Inbox } from './pages/Inbox';
 type UserRole = 'admin' | 'supervisor' | 'finance' | 'pic';
 
 const ALL_ACTIVE_ROLES: UserRole[] = ['admin', 'supervisor', 'finance', 'pic'];
+
+function hasRecoveryHash() {
+  const hash = window.location.hash.replace(/^#/, '');
+  if (!hash) return false;
+
+  const hashParams = new URLSearchParams(hash);
+  return hashParams.get('type') === 'recovery' && Boolean(hashParams.get('access_token'));
+}
+
+const PasswordRecoveryListener = () => {
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    if (hasRecoveryHash()) {
+      navigate('/update-password', { replace: true });
+    }
+
+    const {
+      data: { subscription }
+    } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'PASSWORD_RECOVERY') {
+        navigate('/update-password', { replace: true });
+      }
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, [navigate]);
+
+  return null;
+};
 
 const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
   const { user, loading, accessState } = useAuth();
@@ -55,10 +89,12 @@ const RoleGuard = ({
 
 export default function App() {
   return (
-    <AuthProvider>
-      <BrowserRouter>
+    <BrowserRouter>
+      <PasswordRecoveryListener />
+      <AuthProvider>
         <Routes>
           <Route path="/login" element={<Login />} />
+          <Route path="/update-password" element={<UpdatePassword />} />
           <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
             <Route
               index
@@ -215,7 +251,7 @@ export default function App() {
             {/* Additional routes will be added here */}
           </Route>
         </Routes>
-      </BrowserRouter>
-    </AuthProvider>
+      </AuthProvider>
+    </BrowserRouter>
   );
 }
