@@ -6,6 +6,7 @@ type UserRole = 'admin' | 'supervisor' | 'finance' | 'pic';
 type UserStatus = 'active' | 'invited' | 'suspended';
 type AccessState = UserStatus | 'not_provisioned';
 const ACCOUNT_NOT_PROVISIONED_MESSAGE = 'Account not provisioned. Please contact an admin.';
+const PASSWORD_RECOVERY_PATH = '/update-password';
 
 export type AuthUser = SupabaseUser & {
   uid: string;
@@ -76,6 +77,16 @@ function isUserStatus(value: unknown): value is UserStatus {
 
 function normalizeEmailKey(value: string | null | undefined) {
   return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
+function buildAppUrl(path: string) {
+  const configuredSiteUrl = import.meta.env.VITE_SITE_URL?.trim();
+  const fallbackSiteUrl = typeof window !== 'undefined' ? window.location.origin : '';
+  const siteUrl = configuredSiteUrl || fallbackSiteUrl;
+  const normalizedBaseUrl = siteUrl.replace(/\/+$/, '');
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+
+  return `${normalizedBaseUrl}${normalizedPath}`;
 }
 
 function getMetadataString(...values: unknown[]) {
@@ -298,7 +309,9 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
   const resetPassword = async (email: string) => {
     setAuthNotice(null);
-    const { error } = await supabase.auth.resetPasswordForEmail(normalizeEmailKey(email));
+    const { error } = await supabase.auth.resetPasswordForEmail(normalizeEmailKey(email), {
+      redirectTo: buildAppUrl(PASSWORD_RECOVERY_PATH),
+    });
 
     if (error) {
       throw toAuthError(error);
